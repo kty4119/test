@@ -29,6 +29,7 @@ from ic import utils
 from ic import data
 from ic import models
 from ic import loss as losses_utils
+from ic import validate
 
 llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff']
 datasets = ['coco']
@@ -73,7 +74,7 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=6, type=int,
+    parser.add_argument('-b', '--batch-size', default=30, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
@@ -306,9 +307,9 @@ def main_worker(gpu, ngpus_per_node, args):
         val_dataset, batch_size=(args.val_batch_size or args.batch_size), shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
-    # if args.evaluate:
-    #     validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
-    #     return
+    if args.evaluate:
+        validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        return
 
     for epoch in range(args.start_epoch, args.epochs):
         # if epoch == 0:
@@ -320,28 +321,28 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args)
 
     #     # evaluate on validation set
-    #     acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
 
     #     # remember best acc@1 and save checkpoint
-    #     is_best = acc1 > best_acc1
-    #     best_acc1 = max(acc1, best_acc1)
+        is_best = acc1 > best_acc1
+        best_acc1 = max(acc1, best_acc1)
 
-    #     if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-    #         and args.rank % ngpus_per_node == 0):
+        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+            and args.rank % ngpus_per_node == 0):
 
-    #         # Only save non-frozen parameters.
-    #         stripped_state_dict = {
-    #         k: v for k, v in model.state_dict().items() if 
-    #         ('.lm' not in k and '.visual_model' not in k)
-    #         }
-    #     stripped_state_dict = OrderedDict(sorted(stripped_state_dict.items()))
-    #     utils.save_checkpoint({
-    #         'epoch': epoch + 1,
-    #         'state_dict': stripped_state_dict,
-    #         'best_acc1': best_acc1,
-    #         'optimizer' : optimizer.state_dict(),
-    #         'scheduler' : scheduler.state_dict()
-    #     }, is_best, os.path.join(args.log_dir, 'ckpt'))
+            # Only save non-frozen parameters.
+            stripped_state_dict = {
+            k: v for k, v in model.state_dict().items() if 
+            ('.lm' not in k and '.visual_model' not in k)
+            }
+        stripped_state_dict = OrderedDict(sorted(stripped_state_dict.items()))
+        utils.save_checkpoint({
+            'epoch': epoch + 1,
+            'state_dict': stripped_state_dict,
+            'best_acc1': best_acc1,
+            'optimizer' : optimizer.state_dict(),
+            'scheduler' : scheduler.state_dict()
+        }, is_best, os.path.join(args.log_dir, 'ckpt'))
     
 def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args):
     # ngpus_per_node = torch.cuda.device_count()
@@ -417,7 +418,6 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         
         # Update weights
         if ((i + 1) % args.grad_accumulation_steps == 0) or (i == args.steps_per_epoch - 1):
-            # Zero out gradients of the embedding matrix outside of [IMG].
             for param in model.module.model.input_embeddings.parameters():
                 assert param.grad.shape[0] == len(tokenizer)
                 # Keep other embeddings frozen.
