@@ -42,7 +42,7 @@ def parse_args(args):
                       help='OPT versions: ' +
                         ' | '.join(llm_models) +
                         ' (default: "facebook/opt-6.7b")')
-    parser.add_argument('--visual-model', default='google/vit-base-patch16-224', type=str,
+    parser.add_argument('--visual-model', default='google/vit-base-patch16-224-in21k', type=str,
                       help="Visual encoder to use.")
 
     parser.add_argument('-d', '--dataset', metavar='DATASET',  help='Delimited list of datasets:' +
@@ -98,7 +98,7 @@ def parse_args(args):
     parser.add_argument('--image-size', default=224, type=int, metavar='N', help='Size of images.')
     parser.add_argument('--emb-dim', default=256, type=int, metavar='N', help='Embedding dimension.')
 
-    parser.add_argument('--max-len', default=17, type=int,
+    parser.add_argument('--max-len', default=12, type=int,
                 metavar='N', help='Maximum length to truncate captions / generations to.')
 
 

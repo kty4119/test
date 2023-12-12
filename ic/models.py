@@ -93,8 +93,8 @@ class ICModel(nn.Module):
     # Extract visual embeddings from the vision encoder.
     if 'vit' in self.visual_model_name:
       outputs = self.visual_input_embeddings(pixel_values)
-      visual_embs = self.visual_embeddings(outputs.reshape(5, -1))
-      visual_embs = visual_embs.view(5, 12, 4096)
+      visual_embs = self.visual_embeddings(outputs.reshape(2, -1))
+      visual_embs = visual_embs.view(2, 12, 4096)
     else:
       raise NotImplementedError
     return visual_embs
@@ -129,10 +129,10 @@ class ICModel(nn.Module):
                        output_hidden_states=True)
     
     cap_hidden_fcs = self.cap_hidden_fcs
-    cap_output = cap_hidden_fcs(cap_output.logits.reshape(5, -1))
+    cap_output = cap_hidden_fcs(cap_output.logits.reshape(2, -1))
     
     visual_hidden_fcs = self.visual_hidden_fcs
-    visual_output = visual_hidden_fcs(visual_output.logits.reshape(5, -1))
+    visual_output = visual_hidden_fcs(visual_output.logits.reshape(2, -1))
 
     return cap_output, visual_output
 
