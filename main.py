@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "0,1,3"
+os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
 
 import torch
 import torch.nn as nn
@@ -38,7 +38,7 @@ best_acc1 = 0  # Variable to keep track of best model so far.
 
 def parse_args(args):
     parser = argparse.ArgumentParser(description='Model training')
-    parser.add_argument('--opt-version', default='facebook/opt-6.7b',
+    parser.add_argument('--opt-version', default='/home/shared/hub/models--ty--alpaca-7b-wdiff',
                       choices=llm_models,
                       help='OPT versions: ' +
                         ' | '.join(llm_models) +
@@ -74,7 +74,7 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=30, type=int,
+    parser.add_argument('-b', '--batch-size', default=40, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
@@ -99,7 +99,7 @@ def parse_args(args):
     parser.add_argument('--image-size', default=224, type=int, metavar='N', help='Size of images.')
     parser.add_argument('--emb-dim', default=256, type=int, metavar='N', help='Embedding dimension.')
 
-    parser.add_argument('--max-len', default=12, type=int,
+    parser.add_argument('--max-len', default=17, type=int,
                 metavar='N', help='Maximum length to truncate captions / generations to.')
 
 
@@ -329,7 +329,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
             and args.rank % ngpus_per_node == 0):
-
+            print("332 진행완료")
             # Only save non-frozen parameters.
             stripped_state_dict = {
             k: v for k, v in model.state_dict().items() if 
@@ -415,6 +415,11 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         loss = loss / args.grad_accumulation_steps
         losses.update(loss.item(), images.size(0))
         loss.backward()
+        
+        # 업데이트 안하는 파라미터 확인
+        # for name, param in model.named_parameters():
+        #     if param.grad is None:
+        #         print(name)
         
         # Update weights
         if ((i + 1) % args.grad_accumulation_steps == 0) or (i == args.steps_per_epoch - 1):

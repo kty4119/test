@@ -31,9 +31,9 @@ class ICModel(nn.Module):
     self.image_token = self.tokenizer.cls_token_id
     self.args = args
     self.emb_dim = 256
-    self.in_dim = 12 * 50266
-    # self.in_dim = 17 * 32001
-    self.v_emb_dim = 12 * 4096
+    self.c_h_in_dim = 17 * 4096
+    self.v_h_in_dim = 7 * 4096
+    self.v_emb_dim = 7 * 4096
     self.v_in_dim = 196 * 768
 
     opt_version = args.opt_version
@@ -79,10 +79,10 @@ class ICModel(nn.Module):
 
     self.visual_model_name = visual_encoder
 
-    self.cap_hidden_fcs = nn.Linear(self.in_dim, self.emb_dim)
-    self.visual_hidden_fcs = nn.Linear(self.in_dim, self.emb_dim)
+    self.cap_hidden_fcs = nn.Linear(self.c_h_in_dim, self.emb_dim)
+    self.visual_hidden_fcs = nn.Linear(self.v_h_in_dim, self.emb_dim)
     self.visual_embeddings = nn.Linear(self.v_in_dim, self.v_emb_dim)
-    self.freeze_layer(self.visual_embeddings)
+    # self.freeze_layer(self.visual_embeddings)
     self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     
   def freeze_layer(self, layer):
@@ -93,8 +93,9 @@ class ICModel(nn.Module):
     # Extract visual embeddings from the vision encoder.
     if 'vit' in self.visual_model_name:
       outputs = self.visual_input_embeddings(pixel_values)
-      visual_embs = self.visual_embeddings(outputs.reshape(10, -1))
-      visual_embs = visual_embs.view(10, 12, 4096)
+      batch_size = outputs.shape[0]
+      visual_embs = self.visual_embeddings(outputs.reshape(batch_size, -1))
+      visual_embs = visual_embs.view(batch_size, 7, 4096)
     else:
       raise NotImplementedError
     return visual_embs
@@ -122,17 +123,19 @@ class ICModel(nn.Module):
 
     input_embs = self.input_embeddings(labels)  # (N, T, D)
     
+    ### LLM에 넣기
     cap_output = self.lm(inputs_embeds=input_embs,
                        output_hidden_states=True)
 
     visual_output = self.lm(inputs_embeds=visual_embs,
                        output_hidden_states=True)
-    
+    ### Adapter 생성
     cap_hidden_fcs = self.cap_hidden_fcs
-    cap_output = cap_hidden_fcs(cap_output.logits.reshape(10, -1))
-    
     visual_hidden_fcs = self.visual_hidden_fcs
-    visual_output = visual_hidden_fcs(visual_output.logits.reshape(10, -1))
+    
+    ### output 생성
+    cap_output = cap_hidden_fcs(cap_output.hidden_states[32].reshape(batch_size, -1))
+    visual_output = visual_hidden_fcs(visual_output.hidden_states[32].reshape(batch_size, -1))
 
     return cap_output, visual_output
 

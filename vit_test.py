@@ -41,7 +41,7 @@ with open(json_path, 'r') as file:
 ### image 임베딩
 
 image_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
-img_model = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
+img_model = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k") ## cls 토큰 추가
 
 input_embeddings = img_model.get_input_embeddings()
 img_token = image_processor(image, return_tensors="pt")
@@ -53,6 +53,7 @@ linear_layer = nn.Linear(original_size, target_size)
 img_emb = linear_layer(img_emb.reshape(1, -1))
 img_emb = img_emb.view(1, 17, 4096)
 print(img_emb.shape)
+
 ### caption 임베딩
 
 # text_model = OPTForCausalLM.from_pretrained("facebook/opt-6.7b")
@@ -77,17 +78,19 @@ img_outputs = text_model(inputs_embeds=img_emb,
                        output_hidden_states=True)
 # print(cap_outputs.loss)
 # print(img_outputs.loss)
-print(cap_outputs.logits.shape)
-print(img_outputs.logits.shape)
-# print(cap_outputs.hidden_states.shape)
-# print(img_outputs.hidden_states.shape)
+# print(cap_outputs.logits.shape)
+# print(img_outputs.logits.shape)
+print(cap_outputs.hidden_states[32].shape)
+print(img_outputs.hidden_states[32].shape)
 
-original_size = 17 * 32001
+original_size = 17 * 4096
 target_size = 256
 linear_layer = nn.Linear(original_size, target_size)
 
-cap_outputs = linear_layer(cap_outputs.logits.reshape(1, -1))
-img_outputs = linear_layer(img_outputs.logits.reshape(1, -1))
+print(torch.stack(cap_outputs.hidden_states).reshape(1, -1).shape)
 
-# print(cap_outputs.shape, cap_outputs)
-# print(img_outputs.shape, img_outputs)
+cap_outputs = linear_layer(cap_outputs.hidden_states[32].reshape(1, -1))
+img_outputs = linear_layer(img_outputs.hidden_states[32].reshape(1, -1))
+
+print(cap_outputs.shape, cap_outputs)
+print(img_outputs.shape, img_outputs)

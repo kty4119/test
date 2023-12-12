@@ -28,6 +28,11 @@ def get_feature_extractor_for_model(model_name: str, image_size: int = 224, trai
 def get_pixel_values_for_model(feature_extractor, img: Image.Image):
     pixel_values = feature_extractor(img.convert('RGB'), return_tensors="pt").pixel_values[0, ...]  # (3, H, W)
     return pixel_values
+  
+def save_checkpoint(state, is_best, filename='checkpoint'):
+  torch.save(state, filename + '.pth.tar')
+  if is_best:
+    shutil.copyfile(filename + '.pth.tar', filename + '_best.pth.tar')
 
 def create_image_of_text(text: str, width: int = 224, nrows: int = 2, color=(255, 255, 255), font=None) -> torch.Tensor:
   """Creates a (3, nrows * 14, width) image of text.
