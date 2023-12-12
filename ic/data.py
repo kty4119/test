@@ -12,7 +12,7 @@ from torchvision import transforms as T
 from PIL import Image, ImageFont
 from torch.utils.data import Dataset
 
-from instructionClip import utils
+from ic import utils
 
 def collate_fn(batch):
     batch = list(filter(lambda x: x is not None, batch))
@@ -52,12 +52,12 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
     dataset = torch.utils.data.ConcatDataset([
       JsonDataset(path, image_dir, tokenizer, 'annotations', 'image_id',
         'caption', args.visual_model, train=train, max_len=args.max_len, precision=args.precision,
-        image_size=args.image_size, num_clip_tokens=args.num_clip_tokens)
+        image_size=args.image_size)
       for (path, image_dir) in zip(dataset_paths, image_data_dirs)])
   elif len(dataset_paths) == 1:
     dataset = JsonDataset(dataset_paths[0], image_data_dirs[0], tokenizer, 'annotations', 'image_id',
       'caption', args.visual_model, train=train, max_len=args.max_len, precision=args.precision,
-      image_size=args.image_size, num_clip_tokens=args.num_clip_tokens)
+      image_size=args.image_size)
   else:
     raise ValueError(f'There should be at least one valid dataset, got train={args.dataset}, val={args.val_dataset} instead.')
   return dataset
@@ -66,14 +66,14 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
 class JsonDataset(Dataset):
   def __init__(self, input_filename, base_image_dir, tokenizer, annotation ,img_key,
                caption_key, feature_extractor_model: str,
-               train: bool = True, max_len: int = 32, sep="\t", precision: str = 'fp32',
+               train: bool = True, max_len: int = 16, sep="\t", precision: str = 'fp32',
                image_size: int = 224, num_clip_tokens: int = 1):
     logging.debug(f'Loading json data from {input_filename}.')
     with open(input_filename, 'r') as file:
       df = json.load(file)
 
     self.base_image_dir = base_image_dir
-    self.images = [item[img_key] for item in df[annotation]]
+    self.images = utils.format_to_12_digits([item[img_key] for item in df[annotation]])
     self.captions = [item[caption_key] for item in df[annotation]]
     assert len(self.images) == len(self.captions)
 
@@ -98,22 +98,15 @@ class JsonDataset(Dataset):
     while True:
       image_path = os.path.join(self.base_image_dir, str(self.images[idx]))
       caption = str(self.captions[idx])
-      print(caption)
+      # print(caption)
     #   clip_l_path = os.path.join(self.base_image_dir, 'clip_embs', str(self.images[idx]) + '.npy')
 
       try:
         img = Image.open(image_path)
         images = utils.get_pixel_values_for_model(self.feature_extractor, img)
 
-        # # Only load if we are in generation mode.
-        # with open(clip_l_path, 'rb') as f:
-        #   clip_emb = np.load(f, allow_pickle=True)   # (num_clip_tokens, 768)
-        #   clip_emb = clip_emb[:self.num_clip_tokens, :]
-
         # Generation mode.
         caption = caption
-        for i in range(self.num_tokens):
-          caption += f'[IMG{i}]'
         tokenized_data = self.tokenizer(
           caption,
           return_tensors="pt",
@@ -123,15 +116,11 @@ class JsonDataset(Dataset):
         tokens = tokenized_data.input_ids[0]
         caption_len = tokenized_data.attention_mask[0].sum()
 
-        # If IMG tokens are overridden by padding, replace them with the correct token.
-        if tokens[-1] not in [self.tokenizer.pad_token_id, self.gen_token_idx[-1]]:
-          tokens[-self.num_tokens:] = torch.tensor(self.gen_token_idx).to(dtype=tokens.dtype, device=tokens.device)
-
         decode_caption = self.tokenizer.decode(tokens, skip_special_tokens=False)
         self.font = self.font or ImageFont.load_default()
         cap_img = utils.create_image_of_text(decode_caption.encode('ascii', 'ignore'), width=self.image_size, nrows=2, font=self.font)
 
-        return image_path, images, cap_img, tokens, caption_len, tokens, caption_len
+        return image_path, images, cap_img, tokens, caption_len
       except Exception as e:
         print(f'Error reading for {image_path} with caption {caption}: {e}')
         # Pick a new example at random.

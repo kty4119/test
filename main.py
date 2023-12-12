@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "5,7"
+os.environ["CUDA_VISIBLE_DEVICES"]= "0,1,3"
 
 import torch
 import torch.nn as nn
@@ -25,10 +25,12 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision
 from transformers import AutoTokenizer
 
-from instructionClip import utils
-from instructionClip import data
+from ic import utils
+from ic import data
+from ic import models
+from ic import loss as losses_utils
 
-llm_models = ['facebook/opt-6.7b']
+llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff']
 datasets = ['coco']
 best_acc1 = 0  # Variable to keep track of best model so far.
 
@@ -42,7 +44,6 @@ def parse_args(args):
                         ' (default: "facebook/opt-6.7b")')
     parser.add_argument('--visual-model', default='google/vit-base-patch16-224', type=str,
                       help="Visual encoder to use.")
-    parser.add_argument('--num-clip-tokens', default=77, type=int, metavar='N', help='Number of CLIP token to use for generation.') # 수정 필요
 
     parser.add_argument('-d', '--dataset', metavar='DATASET',  help='Delimited list of datasets:' +
                       ' | '.join(datasets), default='train2014',
@@ -72,9 +73,9 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=200, type=int,
+    parser.add_argument('-b', '--batch-size', default=6, type=int,
                 metavar='N',
-                help='mini-batch size (default: 200), this is the total '
+                help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
                 'using Data Parallel or Distributed Data Parallel')
     parser.add_argument('--val-batch-size', default=None, type=int)
@@ -92,21 +93,13 @@ def parse_args(args):
 
     parser.add_argument('--precision', default='bf16', type=str, choices=['fp32', 'fp16', 'bf16'],
                         help="What precision to train in.")
-    parser.add_argument('--ret-loss-scale', type=float, default=1.0, help="Scale on retrieval loss.")
+    parser.add_argument('--loss-scale', type=float, default=1.0, help="Scale on retrieval loss.")
 
     parser.add_argument('--image-size', default=224, type=int, metavar='N', help='Size of images.')
-    parser.add_argument('--ret-emb-dim', default=256, type=int, metavar='N', help='Embedding dimension for retrieval.')
-    
-    text_fc_modes = ['linear', 'gill_mapper']
-    parser.add_argument('--text-fc-mode', default='gill_mapper',
-                choices=text_fc_modes, help='What kind of translation mapping to use.')
-    parser.add_argument('--ret-text-fc-mode', default='linear',
-                choices=text_fc_modes, help='What kind of translation mapping to use.')
+    parser.add_argument('--emb-dim', default=256, type=int, metavar='N', help='Embedding dimension.')
 
-    parser.add_argument('--max-len', default=32, type=int,
+    parser.add_argument('--max-len', default=17, type=int,
                 metavar='N', help='Maximum length to truncate captions / generations to.')
-    parser.add_argument('--n-visual-tokens', default=4, type=int,
-                metavar='N', help='Number of visual tokens to use for the Frozen model.')
 
 
     parser.add_argument('--beta1', default=0.9, type=float, metavar='M',
@@ -116,7 +109,7 @@ def parse_args(args):
     parser.add_argument('--wd', '--weight-decay', default=0.01, type=float,
                 metavar='W', help='weight decay (default: 0.01)',
                 dest='weight_decay')
-    parser.add_argument('-p', '--print-freq', default=10, type=int,
+    parser.add_argument('-p', '--print-freq', default=100, type=int,
                 metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                 help='path to latest checkpoint (default: none)')
@@ -179,7 +172,6 @@ def main(args):
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
     ngpus_per_node = torch.cuda.device_count()
-    print(ngpus_per_node)
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
@@ -209,12 +201,16 @@ def main_worker(gpu, ngpus_per_node, args):
                     world_size=args.world_size, rank=args.rank)
         
     # Create model
+    model_args = models.ICArgs()
+    model_args.opt_version = args.opt_version
+    model_args.visual_encoder = args.visual_model
+    model_args.text_emb_layers = [-1]
+    model_args.freeze_lm = True
+    model_args.freeze_vm = True
+    model_args.emb_dim = args.emb_dim
     
-    
-    
-    
-    ###
-    tokenizer = AutoTokenizer.from_pretrained(args.opt_version, use_fast=False)
+    # tokenizer = AutoTokenizer.from_pretrained(args.opt_version, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(args.opt_version)
     if tokenizer.pad_token is None:
         if args.opt_version in ['EleutherAI/gpt-j-6B']:
             tokenizer.pad_token = tokenizer.eos_token
@@ -224,6 +220,71 @@ def main_worker(gpu, ngpus_per_node, args):
     # Add an image token for loss masking (and visualization) purposes.
     tokenizer.add_special_tokens({"cls_token": "<|image|>"})  # add special image token to tokenizer
 
+    # Save model args to disk.
+    with open(os.path.join(args.log_dir, 'model_args.json'), 'w') as f:
+        json.dump(vars(model_args), f, indent=4)
+
+    model = models.IC(tokenizer, model_args)
+    if args.precision == 'fp16':
+        model = model.float()
+    elif args.precision == 'bf16':
+        model = model.bfloat16()
+
+    # Print parameters and count of model.
+    param_counts_text = utils.get_params_count_str(model)
+    with open(os.path.join(args.log_dir, 'param_count.txt'), 'w') as f:
+        f.write(param_counts_text)
+
+    # Log trainable parameters to Tensorboard.
+    _, total_trainable_params, total_nontrainable_params = utils.get_params_count(model)
+    writer = SummaryWriter(args.log_dir)
+    writer.add_scalar('params/total', total_trainable_params + total_nontrainable_params, 0)
+    writer.add_scalar('params/total_trainable', total_trainable_params, 0)
+    writer.add_scalar('params/total_non_trainable', total_nontrainable_params, 0)
+    writer.close()
+
+    if not torch.cuda.is_available():
+        print('WARNING: using CPU, this will be slow!')
+        model = torch.nn.DataParallel(model)
+    elif args.distributed:
+        # For multiprocessing distributed, DistributedDataParallel constructor
+        # should always set the single device scope, otherwise,
+        # DistributedDataParallel will use all available devices.
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            model.cuda(args.gpu)
+            # When using a single GPU per process and per
+            # DistributedDataParallel, we need to divide the batch size
+            # ourselves based on the total number of GPUs of the current node.
+            args.batch_size = int(args.batch_size / ngpus_per_node)
+            args.val_batch_size = int((args.val_batch_size or args.batch_size) / ngpus_per_node)
+            args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        else:
+            model.cuda()
+            # DistributedDataParallel will divide and allocate batch_size to all
+            # available GPUs if device_ids are not set
+            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+    elif args.gpu is not None:
+        torch.cuda.set_device(args.gpu)
+        model = model.cuda(args.gpu)
+    else:
+        model = torch.nn.DataParallel(model).cuda()
+
+    # define loss function (criterion), optimizer, and learning rate scheduler
+    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    optimizer_cls = torch.optim.AdamW
+    print('Using torch.optim.AdamW as the optimizer.')
+    optimizer = optimizer_cls(model.parameters(), args.lr,
+                    betas=(args.beta1, args.beta2),
+                    weight_decay=args.weight_decay,
+                    eps=1e-8)
+
+    """Sets the learning rate to the initial LR decayed by 10 every 5 epochs"""
+    scheduler_steplr = StepLR(optimizer, step_size=args.lr_schedule_step_size * args.steps_per_epoch, gamma=args.lr_schedule_gamma)
+    scheduler = GradualWarmupScheduler(optimizer, multiplier=1.0, total_epoch=args.lr_warmup_steps, after_scheduler=scheduler_steplr)
+
+    cudnn.benchmark = True
     
     # Data loading code
     train_dataset = data.get_dataset(args, 'train', tokenizer)
@@ -256,8 +317,7 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        train(train_loader, tokenizer, epoch, args)
-        # train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args)
+        train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args)
 
     #     # evaluate on validation set
     #     acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
@@ -283,32 +343,133 @@ def main_worker(gpu, ngpus_per_node, args):
     #         'scheduler' : scheduler.state_dict()
     #     }, is_best, os.path.join(args.log_dir, 'ckpt'))
     
-# def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args):
-def train(train_loader, tokenizer, epoch, args):
-    ngpus_per_node = torch.cuda.device_count()
+def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args):
+    # ngpus_per_node = torch.cuda.device_count()
+    cont_losses = utils.AverageMeter('ContLoss', ':.4e')
+    losses = utils.AverageMeter('Loss', ':.4e')
+    top1_caption = utils.AverageMeter('AccCaption@1', ':6.2f')
+    top5_caption = utils.AverageMeter('AccCaption@5', ':6.2f')
+    top1_image = utils.AverageMeter('AccImage@1', ':6.2f')
+    top5_image = utils.AverageMeter('AccImage@5', ':6.2f')
+    
+    writer = SummaryWriter(args.log_dir)
+    
+    progress = utils.ProgressMeter(
+    args.steps_per_epoch,
+    [cont_losses, top1_caption, top1_image],
+    prefix="Epoch: [{}]".format(epoch))
     
     # switch to train mode
-    # model.train()
-    end = time.time()
+    model.train()
     
-    for i, (_, images, cap_img, tokens, caption_len, tokens, caption_len) in enumerate(train_loader):
+    for i, (_, images, cap_img, tokens, caption_len) in enumerate(train_loader):
         actual_step = epoch * args.steps_per_epoch + i + 1
-        # measure data loading time
-        # data_time.update(time.time() - end)
 
         if torch.cuda.is_available():
             images = images.cuda(args.gpu, non_blocking=True)
-            ret_tokens = ret_tokens.cuda(args.gpu, non_blocking=True)
-            ret_caption_len = ret_caption_len.cuda(args.gpu, non_blocking=True)
-            gen_tokens = gen_tokens.cuda(args.gpu, non_blocking=True)
-            gen_caption_len = gen_caption_len.cuda(args.gpu, non_blocking=True)
-            clip_emb = clip_emb.cuda(args.gpu, non_blocking=True)
+            tokens = tokens.cuda(args.gpu, non_blocking=True)
+            caption_len = caption_len.cuda(args.gpu, non_blocking=True)
 
         if args.precision == 'fp16':
             images = images.half()
         elif args.precision == 'bf16':
             images = images.bfloat16()
+            
+        loss = 0
+            
+        mode_start = time.time()
+            
+        (cap_embs, visual_embs) = model(images, tokens)
+        
+        if args.distributed:
+          all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
+          all_cap_embs = [torch.zeros_like(cap_embs) for _ in range(dist.get_world_size())]
+          dist.all_gather(all_visual_embs, visual_embs)
+          dist.all_gather(all_cap_embs, cap_embs)
+          # Overwrite with embeddings produced on this replace, which have the gradient.
+          all_visual_embs[dist.get_rank()] = visual_embs
+          all_cap_embs[dist.get_rank()] = cap_embs
+          visual_embs = torch.cat(all_visual_embs)
+          cap_embs = torch.cat(all_cap_embs)
+
+        print(visual_embs.shape, cap_embs.shape)
+        logits_per_image = visual_embs @ cap_embs.t()
+        logits_per_text = logits_per_image.t()
+        if i == 0:
+          print(f'Running contrastive loss over logits_per_text.shape = {logits_per_text.shape} and logits_per_image.shape = {logits_per_image.shape}')
+
+        caption_loss = losses_utils.contrastive_loss(logits_per_text)
+        image_loss = losses_utils.contrastive_loss(logits_per_image)
+        caption_acc1, caption_acc5 = losses_utils.contrastive_acc(logits_per_text, topk=(1, 5))
+        image_acc1, image_acc5 = losses_utils.contrastive_acc(logits_per_image, topk=(1, 5))
+        loss += args.loss_scale * (caption_loss + image_loss) / 2.0
+        cont_losses.update(loss.item(), images.size(0))
+
+        # measure accuracy and record loss
+        top1_caption.update(caption_acc1[0], images.size(0))
+        top5_caption.update(caption_acc5[0], images.size(0))
+        top1_image.update(image_acc1[0], images.size(0))
+        top5_image.update(image_acc5[0], images.size(0))
+        
+        loss = loss / args.grad_accumulation_steps
+        losses.update(loss.item(), images.size(0))
+        loss.backward()
+        
+        # Update weights
+        if ((i + 1) % args.grad_accumulation_steps == 0) or (i == args.steps_per_epoch - 1):
+            # Zero out gradients of the embedding matrix outside of [IMG].
+            for param in model.module.model.input_embeddings.parameters():
+                assert param.grad.shape[0] == len(tokenizer)
+                # Keep other embeddings frozen.
+                mask = torch.zeros((param.grad.shape[0], 1)).to(param.grad)
+
+                param.grad = param.grad * mask
+
+            # compute gradient and do SGD step
+            if args.grad_clip > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            optimizer.step()
+            optimizer.zero_grad()
+            print('=' * 80)
+
+        if args.distributed:
+            losses.all_reduce()
+            cont_losses.all_reduce()
+            top1_caption.all_reduce()
+            top5_caption.all_reduce()
+            top1_image.all_reduce()
+            top5_image.all_reduce()
+
+        progress.display(i + 1)
+
+        writer.add_scalar('train/loss', losses.avg, actual_step)
+        writer.add_scalar('train/contrastive_loss', cont_losses.avg, actual_step)
+
+        writer.add_scalar('train/t2i_top1_acc', top1_caption.avg, actual_step)
+        writer.add_scalar('train/t2i_top5_acc', top5_caption.avg, actual_step)
+        writer.add_scalar('train/i2t_top1_acc', top1_image.avg, actual_step)
+        writer.add_scalar('train/i2t_top5_acc', top5_image.avg, actual_step)
+
+        losses.reset()
+        cont_losses.reset()
+        top1_caption.reset()
+        top5_caption.reset()
+        top1_image.reset()
+        top5_image.reset()
     
+        if i == args.steps_per_epoch - 1:
+            break
+        
+        scheduler.step()
+        curr_lr = scheduler.get_last_lr()
+        if (actual_step == 1) or (i + 1) % args.print_freq == 0:
+            # Write current learning rate to Tensorboard.
+            writer = SummaryWriter(args.log_dir)
+            writer.add_scalar('train/lr', curr_lr[0], actual_step)
+            writer.close()
+
+    writer.close()
+
     
 # Disable tokenizer parallelism.
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
