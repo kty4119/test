@@ -85,7 +85,7 @@ class ICModel(nn.Module):
 
     self.visual_model_name = visual_encoder
     
-    embedding_dim = self.input_embeddings.embedding_dim * 17 # 4096 * 17
+    embedding_dim = self.input_embeddings.embedding_dim * 32 # 4096 * 17
     self.cap_hidden_fcs = nn.ModuleList([])
     self.visual_hidden_fcs = nn.ModuleList([])
     
@@ -123,7 +123,7 @@ class ICModel(nn.Module):
       outputs = outputs.pooler_output
       visual_embs = self.visual_embeddings(outputs)
       # visual_embs = visual_embs.view(visual_embs.shape[0], 17, 4096)
-      visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 17, 4096))
+      visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 32, 4096))
     else:
       raise NotImplementedError
     return visual_embs

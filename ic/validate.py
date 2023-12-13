@@ -34,7 +34,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
         elif args.precision == 'bf16':
           images = images.bfloat16()
 
-        (cap_embs, visual_embs) = model(images, tokens)  # (N, T, C)
+        (cap_embs, visual_embs) = model(images, tokens, caption_len)  # (N, T, C)
 
         if args.distributed:
             original_cap_embs = torch.clone(cap_embs)

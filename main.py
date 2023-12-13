@@ -68,7 +68,7 @@ def parse_args(args):
                 help='number of data loading workers (default: 4)')
     parser.add_argument('--epochs', default=10, type=int, metavar='N',
                 help='number of total epochs to run')
-    parser.add_argument('--steps_per_epoch', default=2000, type=int, metavar='N',
+    parser.add_argument('--steps_per_epoch', default=200, type=int, metavar='N',
                 help='number of training steps per epoch')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                 help='manual epoch number (useful on restarts)')
@@ -82,7 +82,7 @@ def parse_args(args):
     parser.add_argument('--val-batch-size', default=None, type=int)
     parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                 metavar='LR', help='initial learning rate', dest='lr')
-    parser.add_argument('--lr-warmup-steps', default=2000, type=int,
+    parser.add_argument('--lr-warmup-steps', default=200, type=int,
                 metavar='N', help='Number of steps to warm up lr.')
     parser.add_argument('--lr_schedule_step_size', default=5, type=int,
                 metavar='N', help='Number of steps before decaying lr.')
@@ -99,7 +99,7 @@ def parse_args(args):
     parser.add_argument('--image-size', default=224, type=int, metavar='N', help='Size of images.')
     parser.add_argument('--emb-dim', default=256, type=int, metavar='N', help='Embedding dimension.')
 
-    parser.add_argument('--max-len', default=17, type=int,
+    parser.add_argument('--max-len', default=32, type=int,
                 metavar='N', help='Maximum length to truncate captions / generations to.')
 
 
