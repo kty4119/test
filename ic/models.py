@@ -22,6 +22,8 @@ class ICArgs:
   opt_version: str = 'facebook/opt-6.7b'
   visual_encoder: str = 'google/vit-base-patch16-224'
   text_emb_layers: List[int] = [-1]
+  token_idx: List[int] = [0]
+  num_tokens: int = 8
   
 class ICModel(nn.Module):
   def __init__(self, tokenizer, args: ICArgs = ICArgs()):
@@ -30,11 +32,12 @@ class ICModel(nn.Module):
     self.feature_extractor = utils.get_feature_extractor_for_model(args.visual_encoder, train=False)
     self.image_token = self.tokenizer.cls_token_id
     self.args = args
+    self.num_tokens = args.num_tokens
     self.emb_dim = 256
-    self.c_h_in_dim = 17 * 4096
-    self.v_h_in_dim = 7 * 4096
-    self.v_emb_dim = 7 * 4096
-    self.v_in_dim = 196 * 768
+    # self.c_h_in_dim = 17 * 4096
+    # self.v_h_in_dim = 7 * 4096
+    # self.v_emb_dim = 7 * 4096
+    # self.v_in_dim = 196 * 768
 
     opt_version = args.opt_version
     visual_encoder = args.visual_encoder
@@ -56,7 +59,8 @@ class ICModel(nn.Module):
         param.requires_grad = False
     else:
       self.lm.train()
-
+      
+    self.token_idx = args.token_idx
     self.lm.resize_token_embeddings(len(tokenizer))
 
     self.input_embeddings = self.lm.get_input_embeddings()
@@ -69,6 +73,8 @@ class ICModel(nn.Module):
       self.visual_model = AutoModel.from_pretrained(visual_encoder)
       self.visual_input_embeddings = self.visual_model.get_input_embeddings()
 
+    hidden_size = self.visual_model.config.hidden_size
+    
     if self.args.freeze_vm:
       print("Freezing the VM.")
       self.visual_model.eval()
@@ -78,10 +84,31 @@ class ICModel(nn.Module):
       self.visual_model.train()
 
     self.visual_model_name = visual_encoder
-
-    self.cap_hidden_fcs = nn.Linear(self.c_h_in_dim, self.emb_dim)
-    self.visual_hidden_fcs = nn.Linear(self.v_h_in_dim, self.emb_dim)
-    self.visual_embeddings = nn.Linear(self.v_in_dim, self.v_emb_dim)
+    
+    embedding_dim = self.input_embeddings.embedding_dim * 17 # 4096 * 17
+    self.cap_hidden_fcs = nn.ModuleList([])
+    self.visual_hidden_fcs = nn.ModuleList([])
+    
+    for layer_idx in self.args.text_emb_layers:
+      if (layer_idx == -1 or layer_idx == self.lm.config.num_hidden_layers) and ('bert' not in opt_version):
+        in_dim = 4096
+        
+        self.cap_hidden_fcs.append(
+            layer.Adapter(in_dim, self.emb_dim, num_input_tokens=self.args.num_tokens,
+                              num_output_tokens=1))
+        self.visual_hidden_fcs.append(
+            layer.Adapter(in_dim, self.emb_dim, num_input_tokens=self.args.num_tokens,
+                              num_output_tokens=1))
+      elif layer_idx < self.lm.config.num_hidden_layers:
+        self.cap_hidden_fcs.append(
+            layer.Adapter(self.lm.config.hidden_size, self.emb_dim, 
+                              num_input_tokens=self.args.num_tokens, num_output_tokens=1))
+        self.visual_hidden_fcs.append(
+            layer.Adapter(self.lm.config.hidden_size, self.emb_dim, 
+                              num_input_tokens=self.args.num_tokens, num_output_tokens=1))
+      else:
+        raise ValueError(f'Embedding of layer {layer_idx} was requested but model only has {self.lm.config.num_hidden_layers} layers.')
+    self.visual_embeddings = nn.Linear(hidden_size, embedding_dim) # (768, 17 * 4096)
     # self.freeze_layer(self.visual_embeddings)
     self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     
@@ -92,10 +119,11 @@ class ICModel(nn.Module):
   def get_visual_embs(self, pixel_values: torch.FloatTensor):
     # Extract visual embeddings from the vision encoder.
     if 'vit' in self.visual_model_name:
-      outputs = self.visual_input_embeddings(pixel_values)
-      batch_size = outputs.shape[0]
-      visual_embs = self.visual_embeddings(outputs.reshape(batch_size, -1))
-      visual_embs = visual_embs.view(batch_size, 7, 4096)
+      outputs = self.visual_model(pixel_values)
+      outputs = outputs.pooler_output
+      visual_embs = self.visual_embeddings(outputs)
+      # visual_embs = visual_embs.view(visual_embs.shape[0], 17, 4096)
+      visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 17, 4096))
     else:
       raise NotImplementedError
     return visual_embs
@@ -113,7 +141,8 @@ class ICModel(nn.Module):
   def forward(
     self,
     pixel_values: torch.FloatTensor,
-    labels: Optional[torch.LongTensor] = None
+    labels: Optional[torch.LongTensor] = None,
+    caption_len: Optional[torch.LongTensor] = None
   ):
     visual_embs = self.get_visual_embs(pixel_values)
 
@@ -123,6 +152,7 @@ class ICModel(nn.Module):
 
     input_embs = self.input_embeddings(labels)  # (N, T, D)
     
+    cap_embedding_idx = caption_len - 1
     ### LLM에 넣기
     cap_output = self.lm(inputs_embeds=input_embs,
                        output_hidden_states=True)
@@ -134,10 +164,33 @@ class ICModel(nn.Module):
     visual_hidden_fcs = self.visual_hidden_fcs
     
     ### output 생성
-    cap_output = cap_hidden_fcs(cap_output.hidden_states[32].reshape(batch_size, -1))
-    visual_output = visual_hidden_fcs(visual_output.hidden_states[32].reshape(batch_size, -1))
+    cap_llm_hidden_states = []
+    cap_hidden_states = []
+    num_tokens = self.num_tokens
+    for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
+      input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]-num_tokens+1:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+      cap_llm_hidden_states.append(input_hidden_state)
+      cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+    
+    visual_llm_hidden_states = []
+    visual_hidden_states = []
+    for idx, fc_layer in zip(self.args.text_emb_layers, visual_hidden_fcs):
+      input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, cap_embedding_idx[i]-num_tokens+1:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+      visual_llm_hidden_states.append(input_hidden_state)
+      visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+    
+    cap_embedding = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
+    visual_embedding = torch.stack(visual_hidden_states, dim=-1).sum(dim=-1)
+    
+    visual_embs = visual_embedding[:, 0, :]
+    visual_embs = visual_embs / visual_embs.norm(dim=1, keepdim=True)
+    last_embedding = cap_embedding[:, 0, :]
+    last_embedding = last_embedding / last_embedding.norm(dim=1, keepdim=True)
+    logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+    logit_scale = logit_scale.exp()
+    visual_embs = logit_scale * visual_embs
 
-    return cap_output, visual_output
+    return last_embedding, visual_embs
 
   
 class IC(nn.Module):
@@ -146,8 +199,10 @@ class IC(nn.Module):
     self.model = ICModel(tokenizer, model_args)
 
 
-  def __call__(self, images: Tensor, tgt_tokens: Optional[Tensor] = None) -> Tensor:
+  def __call__(self, images: Tensor, tgt_tokens: Optional[Tensor] = None, 
+               caption_len: Optional[Tensor] = None) -> Tensor:
       output = self.model(
         pixel_values = images,
-        labels = tgt_tokens)
+        labels = tgt_tokens,
+        caption_len = caption_len)
       return output

@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"]= "0,1,3,4,5,6"
 
 import torch
 import torch.nn as nn
@@ -45,7 +45,7 @@ def parse_args(args):
                         ' (default: "facebook/opt-6.7b")')
     parser.add_argument('--visual-model', default='google/vit-base-patch16-224-in21k', type=str,
                       help="Visual encoder to use.")
-
+    parser.add_argument('--num-tokens', default=8, type=int, metavar='N', help='Number of [IMG] tokens to use.')
     parser.add_argument('-d', '--dataset', metavar='DATASET',  help='Delimited list of datasets:' +
                       ' | '.join(datasets), default='train2014',
                       type=lambda s: [x for x in s.split(',')])
@@ -74,7 +74,7 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=40, type=int,
+    parser.add_argument('-b', '--batch-size', default=240, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
@@ -209,6 +209,7 @@ def main_worker(gpu, ngpus_per_node, args):
     model_args.freeze_lm = True
     model_args.freeze_vm = True
     model_args.emb_dim = args.emb_dim
+    model_args.num_tokens = args.num_tokens
     
     # tokenizer = AutoTokenizer.from_pretrained(args.opt_version, use_fast=False)
     tokenizer = AutoTokenizer.from_pretrained(args.opt_version)
@@ -220,6 +221,19 @@ def main_worker(gpu, ngpus_per_node, args):
         print("tokenizer.pad_token, tokenizer.eos_token:", tokenizer.pad_token, tokenizer.eos_token)
     # Add an image token for loss masking (and visualization) purposes.
     tokenizer.add_special_tokens({"cls_token": "<|image|>"})  # add special image token to tokenizer
+
+    # Add [IMG] tokens to the vocabulary.
+    model_args.token_idx = []
+    args.token_idx = []
+    for i in range(model_args.num_tokens):
+        print(f'Adding [IMG{i}] token to vocabulary.')
+        print(f'Before adding new token, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
+        num_added_tokens = tokenizer.add_tokens(f'[IMG{i}]')
+        print(f'After adding {num_added_tokens} new tokens, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
+        token_idx = tokenizer(f'[IMG{i}]', add_special_tokens=False).input_ids
+        assert len(token_idx) == 1, token_idx
+        model_args.token_idx.append(token_idx[0])
+        args.token_idx.append(token_idx[0])
 
     # Save model args to disk.
     with open(os.path.join(args.log_dir, 'model_args.json'), 'w') as f:
@@ -320,10 +334,10 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args)
 
-    #     # evaluate on validation set
+        # evaluate on validation set
         acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
 
-    #     # remember best acc@1 and save checkpoint
+        # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
@@ -378,9 +392,7 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
             
         loss = 0
             
-        mode_start = time.time()
-            
-        (cap_embs, visual_embs) = model(images, tokens)
+        (cap_embs, visual_embs) = model(images, tokens, caption_len)
         
         if args.distributed:
           all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
@@ -427,7 +439,8 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
                 assert param.grad.shape[0] == len(tokenizer)
                 # Keep other embeddings frozen.
                 mask = torch.zeros((param.grad.shape[0], 1)).to(param.grad)
-
+                for idx in args.token_idx:
+                    mask[idx] = 1
                 param.grad = param.grad * mask
 
             # compute gradient and do SGD step
@@ -436,14 +449,23 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
             optimizer.step()
             optimizer.zero_grad()
             print('=' * 80)
-
-        if args.distributed:
-            losses.all_reduce()
-            cont_losses.all_reduce()
-            top1_caption.all_reduce()
-            top5_caption.all_reduce()
-            top1_image.all_reduce()
-            top5_image.all_reduce()
+        with torch.no_grad():
+            # Normalize trainable embeddings.
+            frozen_norm = torch.norm(model.module.model.input_embeddings.weight[:-args.num_tokens, :], dim=1).mean(0)
+            for idx in args.token_idx:
+                trainable_weight = model.module.model.input_embeddings.weight[idx, :]
+                model.module.model.input_embeddings.weight[idx, :].div_(trainable_weight.norm(dim=-1) / frozen_norm)
+        if actual_step == 1 or (i + 1) % args.print_freq == 0:
+            print('First 5 values of first 3 tokens of embedding matrix:', model.module.model.input_embeddings.weight.data[:3, :5])
+            print('First 5 values of first [IMG0] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[0], :5])
+            print(f'First 5 values of first [IMG{args.num_tokens-1}] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[-1], :5])
+            if args.distributed:
+                losses.all_reduce()
+                cont_losses.all_reduce()
+                top1_caption.all_reduce()
+                top5_caption.all_reduce()
+                top1_image.all_reduce()
+                top5_image.all_reduce()
 
         progress.display(i + 1)
 
