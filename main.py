@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "0,1,3,4,5,6"
+os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
 
 import torch
 import torch.nn as nn
@@ -45,7 +45,7 @@ def parse_args(args):
                         ' (default: "facebook/opt-6.7b")')
     parser.add_argument('--visual-model', default='google/vit-base-patch16-224-in21k', type=str,
                       help="Visual encoder to use.")
-    parser.add_argument('--num-tokens', default=8, type=int, metavar='N', help='Number of [IMG] tokens to use.')
+    parser.add_argument('--num-tokens', default=0, type=int, metavar='N', help='Number of [IMG] tokens to use.')
     parser.add_argument('-d', '--dataset', metavar='DATASET',  help='Delimited list of datasets:' +
                       ' | '.join(datasets), default='train2014',
                       type=lambda s: [x for x in s.split(',')])
@@ -66,7 +66,7 @@ def parse_args(args):
 
     parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                 help='number of data loading workers (default: 4)')
-    parser.add_argument('--epochs', default=10, type=int, metavar='N',
+    parser.add_argument('--epochs', default=20, type=int, metavar='N',
                 help='number of total epochs to run')
     parser.add_argument('--steps_per_epoch', default=200, type=int, metavar='N',
                 help='number of training steps per epoch')
@@ -74,7 +74,7 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=240, type=int,
+    parser.add_argument('-b', '--batch-size', default=100, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
@@ -219,8 +219,8 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         print("tokenizer.pad_token, tokenizer.eos_token:", tokenizer.pad_token, tokenizer.eos_token)
-    # Add an image token for loss masking (and visualization) purposes.
-    tokenizer.add_special_tokens({"cls_token": "<|image|>"})  # add special image token to tokenizer
+    # Add an summary token for loss masking (and visualization) purposes.
+    tokenizer.add_special_tokens({"cls_token": "<|summary|>"})  # add special summary token to tokenizer
 
     # Add [IMG] tokens to the vocabulary.
     model_args.token_idx = []
@@ -326,8 +326,8 @@ def main_worker(gpu, ngpus_per_node, args):
         return
 
     for epoch in range(args.start_epoch, args.epochs):
-        # if epoch == 0:
-        #     validate.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
+        if epoch == 0:
+            validate.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -343,25 +343,26 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
             and args.rank % ngpus_per_node == 0):
-            print("332 진행완료")
             # Only save non-frozen parameters.
             stripped_state_dict = {
             k: v for k, v in model.state_dict().items() if 
             ('.lm' not in k and '.visual_model' not in k)
             }
-        stripped_state_dict = OrderedDict(sorted(stripped_state_dict.items()))
-        utils.save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': stripped_state_dict,
-            'best_acc1': best_acc1,
-            'optimizer' : optimizer.state_dict(),
-            'scheduler' : scheduler.state_dict()
-        }, is_best, os.path.join(args.log_dir, 'ckpt'))
+            stripped_state_dict = OrderedDict(sorted(stripped_state_dict.items()))
+            utils.save_checkpoint({
+                'epoch': epoch + 1,
+                'state_dict': stripped_state_dict,
+                'best_acc1': best_acc1,
+                'optimizer' : optimizer.state_dict(),
+                'scheduler' : scheduler.state_dict()
+            }, is_best, os.path.join(args.log_dir, 'ckpt'))
     
 def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args):
     # ngpus_per_node = torch.cuda.device_count()
     cont_losses = utils.AverageMeter('ContLoss', ':.4e')
     losses = utils.AverageMeter('Loss', ':.4e')
+    cap_ce_losses = utils.AverageMeter('CapCeLoss', ':.4e')
+    # vis_ce_losses = utils.AverageMeter('VisCeLoss', ':.4e')
     top1_caption = utils.AverageMeter('AccCaption@1', ':6.2f')
     top5_caption = utils.AverageMeter('AccCaption@5', ':6.2f')
     top1_image = utils.AverageMeter('AccImage@1', ':6.2f')
@@ -392,7 +393,16 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
             
         loss = 0
             
-        (cap_embs, visual_embs) = model(images, tokens, caption_len)
+        (cap_output, visual_output, cap_embs, visual_embs) = model(images, tokens, caption_len)
+        print(cap_output.loss)
+        # print(visual_output.loss)
+        cap_ce_loss = cap_output.loss * 0.5
+        # vis_ce_loss = visual_output.loss * 0.5
+        loss += cap_ce_loss
+        # loss += vis_ce_loss
+        
+        cap_ce_losses.update(cap_ce_loss.item(), images.size(0))
+        # vis_ce_losses.update(vis_ce_loss.item(), images.size(0))
         
         if args.distributed:
           all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
@@ -439,8 +449,8 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
                 assert param.grad.shape[0] == len(tokenizer)
                 # Keep other embeddings frozen.
                 mask = torch.zeros((param.grad.shape[0], 1)).to(param.grad)
-                for idx in args.token_idx:
-                    mask[idx] = 1
+                # for idx in args.token_idx:
+                #     mask[idx] = 1
                 param.grad = param.grad * mask
 
             # compute gradient and do SGD step
@@ -457,11 +467,13 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
                 model.module.model.input_embeddings.weight[idx, :].div_(trainable_weight.norm(dim=-1) / frozen_norm)
         if actual_step == 1 or (i + 1) % args.print_freq == 0:
             print('First 5 values of first 3 tokens of embedding matrix:', model.module.model.input_embeddings.weight.data[:3, :5])
-            print('First 5 values of first [IMG0] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[0], :5])
-            print(f'First 5 values of first [IMG{args.num_tokens-1}] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[-1], :5])
+            # print('First 5 values of first [IMG0] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[0], :5])
+            # print(f'First 5 values of first [IMG{args.num_tokens-1}] token embeddings:', model.module.model.input_embeddings.weight.data[args.token_idx[-1], :5])
             if args.distributed:
                 losses.all_reduce()
                 cont_losses.all_reduce()
+                cap_ce_losses.all_reduce()
+                # vis_ce_losses.all_reduce()
                 top1_caption.all_reduce()
                 top5_caption.all_reduce()
                 top1_image.all_reduce()
@@ -471,6 +483,8 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
 
         writer.add_scalar('train/loss', losses.avg, actual_step)
         writer.add_scalar('train/contrastive_loss', cont_losses.avg, actual_step)
+        writer.add_scalar('train/cap_ce_loss', cap_ce_losses.avg, actual_step)
+        # writer.add_scalar('train/vis_ce_loss', vis_ce_losses.avg, actual_step)
 
         writer.add_scalar('train/t2i_top1_acc', top1_caption.avg, actual_step)
         writer.add_scalar('train/t2i_top5_acc', top5_caption.avg, actual_step)
@@ -479,6 +493,8 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
 
         losses.reset()
         cont_losses.reset()
+        cap_ce_losses.reset()
+        # vis_ce_losses.reset()
         top1_caption.reset()
         top5_caption.reset()
         top1_image.reset()

@@ -34,8 +34,9 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
         elif args.precision == 'bf16':
           images = images.bfloat16()
 
-        (cap_embs, visual_embs) = model(images, tokens, caption_len)  # (N, T, C)
-
+        (cap_output, visual_output, cap_embs, visual_embs) = model(images, tokens, caption_len)  # (N, T, C)
+        print(cap_output.loss)
+        loss = cap_output.loss
         if args.distributed:
             original_cap_embs = torch.clone(cap_embs)
             all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
@@ -53,8 +54,8 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
             end_idx = start_idx + images.shape[0]
             assert torch.all(cap_embs[start_idx:end_idx] == original_cap_embs), args.rank
 
-            all_text_features.append(cap_embs.cpu())
-            all_image_features.append(visual_embs.cpu())
+        all_text_features.append(cap_embs.cpu())
+        all_image_features.append(visual_embs.cpu())
 
         if i % args.print_freq == 0:
           progress.display(i + 1)
@@ -73,7 +74,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       all_caption_acc1, all_caption_acc5 = losses_utils.contrastive_acc(logits_per_text, topk=(1, 5))
       image_loss = losses_utils.contrastive_loss(logits_per_image)
       caption_loss = losses_utils.contrastive_loss(logits_per_text)
-
+      
       loss = args.loss_scale * (image_loss + caption_loss) / 2.0
       cont_losses.update(loss.item(), logits_per_image.size(0))
       top1_caption.update(all_caption_acc1.item(), logits_per_image.size(0))

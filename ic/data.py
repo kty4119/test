@@ -38,7 +38,7 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
 
   elif split == 'val':
     if 'coco' in args.val_dataset:
-      dataset_paths.append(os.path.join(args.dataset_dir, 'captions_val2014.json'))
+      dataset_paths.append(os.path.join(args.dataset_dir, 'captions_val2014_v2.json'))
       image_data_dirs.append(os.path.join(args.image_dir, 'val2014'))
     else:
       raise NotImplementedError

@@ -18,6 +18,7 @@ class Adapter(nn.Module):
         for i in range(self.num_input_tokens):
             outputs.append(self.model[i](x[:, i, :]))  # (N, D)
         outputs = torch.stack(outputs, dim=1)  # (N, T, D)
+        print("21")
     else:
         outputs = self.model(x)
         
