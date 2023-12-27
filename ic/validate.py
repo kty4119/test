@@ -64,8 +64,8 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
           break
 
       # Measure retrieval metrics over the entire validation set.
-      all_image_features = torch.cat(all_image_features, axis=0)  # (coco_val_len, 2048)
-      all_text_features = torch.cat(all_text_features, axis=0)  # (coco_val_len, 2048)
+      all_image_features = torch.cat(all_image_features, axis=0)
+      all_text_features = torch.cat(all_text_features, axis=0)
 
       print(f"Computing similarity between {all_image_features.shape} and {all_text_features.shape}.")
       logits_per_image = all_image_features @ all_text_features.t()
