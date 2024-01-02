@@ -7,8 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "6,7"
-
+os.environ["CUDA_VISIBLE_DEVICES"]= "2,3"
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -26,11 +25,11 @@ import torchvision
 from transformers import AutoTokenizer
 
 from ic import utils
-from ic import data
+# from ic import data
 from ic import data_sugar_crepe
 from ic import models
 from ic import loss as losses_utils
-from ic import validate
+# from ic import validate
 from ic import validate_sugar_crepe
 
 llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff']
@@ -61,7 +60,7 @@ def parse_args(args):
                 help='Dataset directory containing .json files.')
     parser.add_argument('--image-dir', default='/home/kty4119/coco/', type=str,
                 help='Dataset directory containing image folders.')
-    parser.add_argument('--log-base-dir', default='./runs', type=str,
+    parser.add_argument('--log-base-dir', default='/home/kty4119/runs', type=str,
                 help='Base directory to write logs and ckpts to.')
     parser.add_argument('--exp-name', default='frozen', type=str,
                 help='Name of experiment, used for saving checkpoints.')
@@ -301,6 +300,29 @@ def main_worker(gpu, ngpus_per_node, args):
     scheduler_steplr = StepLR(optimizer, step_size=args.lr_schedule_step_size * args.steps_per_epoch, gamma=args.lr_schedule_gamma)
     scheduler = GradualWarmupScheduler(optimizer, multiplier=1.0, total_epoch=args.lr_warmup_steps, after_scheduler=scheduler_steplr)
 
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            if args.gpu is None:
+                checkpoint = torch.load(args.resume)
+            else:
+                # Map model to be loaded to specified single gpu.
+                loc = 'cuda:{}'.format(args.gpu)
+                checkpoint = torch.load(args.resume, map_location=loc)
+            args.start_epoch = checkpoint['epoch']
+            # best_acc1 = checkpoint['best_acc1']
+            # if args.gpu is not None:
+            #     # best_acc1 may be from a checkpoint from a different GPU
+            #     best_acc1 = best_acc1.to(args.gpu)
+            model.load_state_dict(checkpoint['state_dict'], strict=False)
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                .format(args.resume, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+
     cudnn.benchmark = True
     
     # Data loading code
@@ -326,6 +348,7 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
     if args.evaluate:
+        epoch = 0
         # validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
         validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
         return

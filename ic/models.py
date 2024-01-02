@@ -12,9 +12,9 @@ import pickle as pkl
 from PIL import Image, UnidentifiedImageError
 from requests.exceptions import ConnectionError
 
-# from transformers import AutoTokenizer, AutoModel, ViTModel, OPTForCausalLM, AutoModelForCausalLM
-from transformers import AutoTokenizer, AutoModel, OPTForCausalLM, AutoModelForCausalLM
-from ic.custom_vit import ViTModel
+from transformers import AutoTokenizer, AutoModel, ViTModel, OPTForCausalLM, AutoModelForCausalLM
+# from transformers import AutoTokenizer, AutoModel, OPTForCausalLM, AutoModelForCausalLM
+# from ic.custom_vit import ViTModel
 from ic import utils
 from ic import layer
 
@@ -120,9 +120,9 @@ class ICModel(nn.Module):
       bs, _, _, _ = pixel_values.shape
       # print(pixel_values.shape)
       outputs = self.visual_model(pixel_values)
-      outputs = torch.stack([outputs.last_hidden_state[i, 167:168, :] for i in range(bs)], axis=0)
+      # outputs = torch.stack([outputs.last_hidden_state[i, 167:168, :] for i in range(bs)], axis=0)
       # outputs = outputs.last_hidden_states
-      # outputs = outputs.pooler_output
+      outputs = outputs.pooler_output
       visual_embs = self.visual_embeddings(outputs)
       visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 1, 4096))
     else:

@@ -80,8 +80,8 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       print(f"Computing similarity between {all_pos_text_features.shape} and {all_neg_text_features.shape}.")
       logits_per_pos_text = all_pos_text_features @ all_image_features.t()
       logits_per_neg_text = all_neg_text_features @ all_image_features.t()
-      metrics = losses_utils.sugar_crepe_acc(logits_per_pos_text, logits_per_neg_text)
-      print("metrics: ", metrics)
+      all_metrics = losses_utils.sugar_crepe_acc(logits_per_pos_text, logits_per_neg_text)
+      print("metrics: ", all_metrics)
       
       all_image_acc1, all_image_acc5 = losses_utils.contrastive_acc(logits_per_pos_text, topk=(1, 5))
       all_caption_acc1, all_caption_acc5 = losses_utils.contrastive_acc(logits_per_neg_text, topk=(1, 5))
@@ -94,7 +94,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       top5_caption.update(all_caption_acc5.item(), logits_per_pos_text.size(0))
       top1_image.update(all_image_acc1.item(), logits_per_pos_text.size(0))
       top5_image.update(all_image_acc5.item(), logits_per_pos_text.size(0))
-      # metrics.update(metrics.item(), logits_per_pos_text.size(0))
+      metrics.update(all_metrics.item(), logits_per_pos_text.size(0))
 
   cont_losses = utils.AverageMeter('ContLoss', ':.4e', utils.Summary.AVERAGE)
   top1_caption = utils.AverageMeter('CaptionAcc@1', ':6.2f', utils.Summary.AVERAGE)
@@ -128,7 +128,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       aux_val_dataset, batch_size=(args.val_batch_size or args.batch_size), shuffle=False,
       num_workers=args.workers, pin_memory=True, collate_fn=data.collate_fn)
     run_validate(aux_val_loader, len(val_loader))
-
+  print("metrics:", metrics)
   progress.display_summary()
   writer.add_scalar('val/contrastive_loss', cont_losses.avg, actual_step)
   writer.add_scalar('val/t2i_top1_acc', top1_caption.avg, actual_step)
@@ -137,7 +137,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
   writer.add_scalar('val/i2t_top5_acc', top5_image.avg, actual_step)
   writer.add_scalar('val/top1_acc', (top1_caption.avg + top1_image.avg) / 2.0, actual_step)
   writer.add_scalar('val/top5_acc', (top5_caption.avg + top5_image.avg) / 2.0, actual_step)
-  writer.add_scalar('val/metrics', metrics, actual_step)
+  writer.add_scalar('val/metrics', metrics.avg, actual_step)
 
   writer.close()
 
