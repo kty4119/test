@@ -1,5 +1,6 @@
 from typing import Optional
 import torch
+import numpy as np
 from ic import utils
 
 def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
@@ -41,3 +42,15 @@ def contrastive_acc(logits: torch.Tensor, target: Optional[torch.Tensor] = None,
         correct_k = any_k_correct.float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
       return res
+    
+def sugar_crepe_acc(pos_score, neg_score) -> torch.Tensor:
+  print("pos_score: ", pos_score)
+  print("neg_score: ", neg_score)
+  print(pos_score.shape)
+
+  result = (pos_score > neg_score).float()
+  
+  all_cnt = pos_score.shape[0] * pos_score.shape[1]
+  print(result, result.shape)
+  print(torch.tensor([torch.sum(result).item() / all_cnt]))
+  return torch.tensor([torch.sum(result).item() / all_cnt])

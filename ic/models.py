@@ -143,52 +143,107 @@ class ICModel(nn.Module):
     self,
     pixel_values: torch.FloatTensor,
     labels: Optional[torch.LongTensor] = None,
-    caption_len: Optional[torch.LongTensor] = None
+    caption_len: Optional[torch.LongTensor] = None,
+    neg_labels: Optional[torch.LongTensor] = None,
+    neg_caption_len: Optional[torch.LongTensor] = None
   ):
     visual_embs = self.get_visual_embs(pixel_values)
 
     batch_size, vis_seq_len, _ = visual_embs.shape  # vis_seq_len = n_visual_tokens
     if labels is not None:
       assert labels.shape[0] == batch_size, (visual_embs.shape, labels.shape)
-
-    input_embs = self.input_embeddings(labels)  # (N, T, D)
-    
-    cap_embedding_idx = caption_len - 1
-    print(cap_embedding_idx)
-    ### LLM에 넣기
-    cap_output = self.lm(inputs_embeds=input_embs,
-                          labels = labels,
-                          output_hidden_states=True)
-
-    visual_output = self.lm(inputs_embeds=visual_embs,
+    if neg_labels is None:
+      input_embs = self.input_embeddings(labels)  # (N, T, D)
+      
+      cap_embedding_idx = caption_len - 1
+      print(cap_embedding_idx)
+      ### LLM에 넣기
+      cap_output = self.lm(inputs_embeds=input_embs,
+                            labels = labels,
                             output_hidden_states=True)
-    ### Adapter 생성
-    cap_hidden_fcs = self.cap_hidden_fcs
-    vis_hidden_fcs = self.vis_hidden_fcs
-    
-    ### output 생성
-    cap_hidden_states = []
-    for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
-      input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-      cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
-    
-    visual_hidden_states = []
-    for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
-      input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
-      visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
-    
-    cap_last_hidden_states = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
-    visual_last_hidden_states = torch.stack(visual_hidden_states, dim=-1).sum(dim=-1)
-    
-    visual_embs = visual_last_hidden_states[:, 0, :]
-    visual_embs = visual_embs / visual_embs.norm(dim=1, keepdim=True)
-    cap_embs = cap_last_hidden_states[:, 0, :]
-    cap_embs = cap_embs / cap_embs.norm(dim=1, keepdim=True)
-    logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-    logit_scale = logit_scale.exp()
-    visual_embs = logit_scale * visual_embs
 
-    return cap_output, visual_output, cap_embs, visual_embs
+      visual_output = self.lm(inputs_embeds=visual_embs,
+                              output_hidden_states=True)
+      ### Adapter 생성
+      cap_hidden_fcs = self.cap_hidden_fcs
+      vis_hidden_fcs = self.vis_hidden_fcs
+      
+      ### output 생성
+      cap_hidden_states = []
+      for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
+        input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+      
+      visual_hidden_states = []
+      for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
+        input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
+        visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+      
+      cap_last_hidden_states = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
+      visual_last_hidden_states = torch.stack(visual_hidden_states, dim=-1).sum(dim=-1)
+      
+      visual_embs = visual_last_hidden_states[:, 0, :]
+      visual_embs = visual_embs / visual_embs.norm(dim=1, keepdim=True)
+      cap_embs = cap_last_hidden_states[:, 0, :]
+      cap_embs = cap_embs / cap_embs.norm(dim=1, keepdim=True)
+      logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+      logit_scale = logit_scale.exp()
+      visual_embs = logit_scale * visual_embs
+
+      return cap_output, visual_output, cap_embs, visual_embs
+    else:
+      input_embs = self.input_embeddings(labels)  # (N, T, D)
+      neg_input_embs = self.input_embeddings(neg_labels)  # (N, T, D)
+      
+      cap_embedding_idx = caption_len - 1
+      neg_cap_embedding_idx = neg_caption_len - 1
+      # print(cap_embedding_idx)
+      ### LLM에 넣기
+      cap_output = self.lm(inputs_embeds=input_embs,
+                            labels = labels,
+                            output_hidden_states=True)
+      
+      neg_cap_output = self.lm(inputs_embeds=neg_input_embs,
+                            labels = neg_labels,
+                            output_hidden_states=True)
+
+      visual_output = self.lm(inputs_embeds=visual_embs,
+                              output_hidden_states=True)
+      ### Adapter 생성
+      cap_hidden_fcs = self.cap_hidden_fcs
+      vis_hidden_fcs = self.vis_hidden_fcs
+      
+      ### output 생성
+      cap_hidden_states = []
+      for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
+        input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+      
+      neg_cap_hidden_states = []
+      for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
+        input_hidden_state = torch.stack([neg_cap_output.hidden_states[idx][i, neg_cap_embedding_idx[i]:neg_cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        neg_cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+      
+      visual_hidden_states = []
+      for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
+        input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
+        visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+      
+      cap_last_hidden_states = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
+      neg_cap_last_hidden_states = torch.stack(neg_cap_hidden_states, dim=-1).sum(dim=-1)
+      visual_last_hidden_states = torch.stack(visual_hidden_states, dim=-1).sum(dim=-1)
+      
+      visual_embs = visual_last_hidden_states[:, 0, :]
+      visual_embs = visual_embs / visual_embs.norm(dim=1, keepdim=True)
+      cap_embs = cap_last_hidden_states[:, 0, :]
+      cap_embs = cap_embs / cap_embs.norm(dim=1, keepdim=True)
+      neg_cap_embs = neg_cap_last_hidden_states[:, 0, :]
+      neg_cap_embs = neg_cap_embs / neg_cap_embs.norm(dim=1, keepdim=True)
+      logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+      logit_scale = logit_scale.exp()
+      visual_embs = logit_scale * visual_embs
+
+      return cap_output, visual_output, cap_embs, neg_cap_embs, visual_embs
 
   
 class IC(nn.Module):
@@ -198,9 +253,12 @@ class IC(nn.Module):
 
 
   def __call__(self, images: Tensor, tgt_tokens: Optional[Tensor] = None, 
-               caption_len: Optional[Tensor] = None) -> Tensor:
+               caption_len: Optional[Tensor] = None, neg_tgt_tokens: Optional[Tensor] = None, 
+               neg_caption_len: Optional[Tensor] = None) -> Tensor:
       output = self.model(
         pixel_values = images,
         labels = tgt_tokens,
-        caption_len = caption_len)
+        caption_len = caption_len,
+        neg_labels = neg_tgt_tokens,
+        neg_caption_len = neg_caption_len)
       return output

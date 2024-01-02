@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"]= "6,7"
 
 import torch
 import torch.nn as nn
@@ -27,9 +27,11 @@ from transformers import AutoTokenizer
 
 from ic import utils
 from ic import data
+from ic import data_sugar_crepe
 from ic import models
 from ic import loss as losses_utils
 from ic import validate
+from ic import validate_sugar_crepe
 
 llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff']
 datasets = ['coco']
@@ -50,7 +52,7 @@ def parse_args(args):
                       ' | '.join(datasets), default='train2014',
                       type=lambda s: [x for x in s.split(',')])
 
-    parser.add_argument('--val-dataset', metavar='DATASET', default='val2014',
+    parser.add_argument('--val-dataset', metavar='DATASET', default='val2017',
                 type=lambda s: [x for x in s.split(',')],
                 help='Validation dataset: ' +
                 ' | '.join(datasets) +
@@ -302,8 +304,10 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
     
     # Data loading code
-    train_dataset = data.get_dataset(args, 'train', tokenizer)
-    val_dataset = data.get_dataset(args, 'val', tokenizer)
+    # train_dataset = data.get_dataset(args, 'train', tokenizer)
+    # val_dataset = data.get_dataset(args, 'val', tokenizer)
+    train_dataset = data_sugar_crepe.get_dataset(args, 'train', tokenizer)
+    val_dataset = data_sugar_crepe.get_dataset(args, 'val', tokenizer)
     print(f'Training with {len(train_dataset)} examples and validating with {len(val_dataset)} examples.')
 
     if args.distributed:
@@ -322,12 +326,14 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
     if args.evaluate:
-        validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        # validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
         return
 
     for epoch in range(args.start_epoch, args.epochs):
         if epoch == 0:
-            validate.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
+            # validate.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
+            validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -335,7 +341,8 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args)
 
         # evaluate on validation set
-        acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        # acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        acc1 = validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
