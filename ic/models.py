@@ -22,7 +22,7 @@ class ICArgs:
   freeze_lm: bool = True
   freeze_vm: bool = True
   opt_version: str = 'facebook/opt-6.7b'
-  visual_encoder: str = 'google/vit-base-patch16-224'
+  visual_encoder: str = 'google/vit-base-patch16-224-in21k'
   text_emb_layers: List[int] = [-1]
   token_idx: List[int] = [0]
   num_tokens: int = 0
@@ -123,6 +123,7 @@ class ICModel(nn.Module):
       # outputs = torch.stack([outputs.last_hidden_state[i, 167:168, :] for i in range(bs)], axis=0)
       # outputs = outputs.last_hidden_states
       outputs = outputs.pooler_output
+      # visual adapter에 넣고 visual emb 뽑기
       visual_embs = self.visual_embeddings(outputs)
       visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 1, 4096))
     else:

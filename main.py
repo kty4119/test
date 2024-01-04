@@ -51,7 +51,7 @@ def parse_args(args):
                       ' | '.join(datasets), default='train2014',
                       type=lambda s: [x for x in s.split(',')])
 
-    parser.add_argument('--val-dataset', metavar='DATASET', default='val2017',
+    parser.add_argument('--val-dataset', metavar='DATASET', default='val2014',
                 type=lambda s: [x for x in s.split(',')],
                 help='Validation dataset: ' +
                 ' | '.join(datasets) +
@@ -69,7 +69,7 @@ def parse_args(args):
                 help='number of data loading workers (default: 4)')
     parser.add_argument('--epochs', default=20, type=int, metavar='N',
                 help='number of total epochs to run')
-    parser.add_argument('--steps_per_epoch', default=200, type=int, metavar='N',
+    parser.add_argument('--steps_per_epoch', default=2000, type=int, metavar='N',
                 help='number of training steps per epoch')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                 help='manual epoch number (useful on restarts)')
@@ -83,7 +83,7 @@ def parse_args(args):
     parser.add_argument('--val-batch-size', default=None, type=int)
     parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                 metavar='LR', help='initial learning rate', dest='lr')
-    parser.add_argument('--lr-warmup-steps', default=200, type=int,
+    parser.add_argument('--lr-warmup-steps', default=2000, type=int,
                 metavar='N', help='Number of steps to warm up lr.')
     parser.add_argument('--lr_schedule_step_size', default=5, type=int,
                 metavar='N', help='Number of steps before decaying lr.')
@@ -226,15 +226,15 @@ def main_worker(gpu, ngpus_per_node, args):
     # Add [IMG] tokens to the vocabulary.
     model_args.token_idx = []
     args.token_idx = []
-    for i in range(model_args.num_tokens):
-        print(f'Adding [IMG{i}] token to vocabulary.')
-        print(f'Before adding new token, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
-        num_added_tokens = tokenizer.add_tokens(f'[IMG{i}]')
-        print(f'After adding {num_added_tokens} new tokens, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
-        token_idx = tokenizer(f'[IMG{i}]', add_special_tokens=False).input_ids
-        assert len(token_idx) == 1, token_idx
-        model_args.token_idx.append(token_idx[0])
-        args.token_idx.append(token_idx[0])
+    # for i in range(model_args.num_tokens):
+    #     print(f'Adding [IMG{i}] token to vocabulary.')
+    #     print(f'Before adding new token, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
+    #     num_added_tokens = tokenizer.add_tokens(f'[IMG{i}]')
+    #     print(f'After adding {num_added_tokens} new tokens, tokenizer("[IMG{i}]") =', tokenizer(f'[IMG{i}]', add_special_tokens=False))
+    #     token_idx = tokenizer(f'[IMG{i}]', add_special_tokens=False).input_ids
+    #     assert len(token_idx) == 1, token_idx
+    #     model_args.token_idx.append(token_idx[0])
+    #     args.token_idx.append(token_idx[0])
 
     # Save model args to disk.
     with open(os.path.join(args.log_dir, 'model_args.json'), 'w') as f:
@@ -349,6 +349,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     if args.evaluate:
         epoch = 0
+        print("start epoch", args.start_epoch)
         # validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
         validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
         return
@@ -392,7 +393,6 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
     cont_losses = utils.AverageMeter('ContLoss', ':.4e')
     losses = utils.AverageMeter('Loss', ':.4e')
     cap_ce_losses = utils.AverageMeter('CapCeLoss', ':.4e')
-    # vis_ce_losses = utils.AverageMeter('VisCeLoss', ':.4e')
     top1_caption = utils.AverageMeter('AccCaption@1', ':6.2f')
     top5_caption = utils.AverageMeter('AccCaption@5', ':6.2f')
     top1_image = utils.AverageMeter('AccImage@1', ':6.2f')
