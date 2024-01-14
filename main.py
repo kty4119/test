@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "2,3"
+os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -25,21 +25,22 @@ import torchvision
 from transformers import AutoTokenizer
 
 from ic import utils
-# from ic import data
+from ic import data
 from ic import data_sugar_crepe
 from ic import models
 from ic import loss as losses_utils
 # from ic import validate
+# from ic import validate_v2
 from ic import validate_sugar_crepe
 
-llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff']
+llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff','/home/shared/hub/ty_alpaca']
 datasets = ['coco']
 best_acc1 = 0  # Variable to keep track of best model so far.
 
 
 def parse_args(args):
     parser = argparse.ArgumentParser(description='Model training')
-    parser.add_argument('--opt-version', default='/home/shared/hub/models--ty--alpaca-7b-wdiff',
+    parser.add_argument('--opt-version', default='/home/shared/hub/ty_alpaca',
                       choices=llm_models,
                       help='OPT versions: ' +
                         ' | '.join(llm_models) +
@@ -75,7 +76,7 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=100, type=int,
+    parser.add_argument('-b', '--batch-size', default=80, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
@@ -326,10 +327,10 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
     
     # Data loading code
-    # train_dataset = data.get_dataset(args, 'train', tokenizer)
-    # val_dataset = data.get_dataset(args, 'val', tokenizer)
-    train_dataset = data_sugar_crepe.get_dataset(args, 'train', tokenizer)
-    val_dataset = data_sugar_crepe.get_dataset(args, 'val', tokenizer)
+    train_dataset = data.get_dataset(args, 'train', tokenizer)
+    val_dataset = data.get_dataset(args, 'val', tokenizer)
+    # train_dataset = data_sugar_crepe.get_dataset(args, 'train', tokenizer)
+    # val_dataset = data_sugar_crepe.get_dataset(args, 'val', tokenizer)
     print(f'Training with {len(train_dataset)} examples and validating with {len(val_dataset)} examples.')
 
     if args.distributed:
@@ -350,13 +351,16 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.evaluate:
         epoch = 0
         print("start epoch", args.start_epoch)
+        # validate.validate(train_loader, model, tokenizer, criterion, epoch, args)
         # validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        # validate_v2.validate(val_loader, model, tokenizer, criterion, epoch, args)
         validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
         return
 
     for epoch in range(args.start_epoch, args.epochs):
         if epoch == 0:
             # validate.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
+            # validate_v2.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
             validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch-1, args)
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -366,6 +370,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # evaluate on validation set
         # acc1 = validate.validate(val_loader, model, tokenizer, criterion, epoch, args)
+        # acc1 = validate_v2.validate(val_loader, model, tokenizer, criterion, epoch, args)
         acc1 = validate_sugar_crepe.validate(val_loader, model, tokenizer, criterion, epoch, args)
 
         # remember best acc@1 and save checkpoint
@@ -389,7 +394,7 @@ def main_worker(gpu, ngpus_per_node, args):
             }, is_best, os.path.join(args.log_dir, 'ckpt'))
     
 def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler, args):
-    # ngpus_per_node = torch.cuda.device_count()
+    ngpus_per_node = torch.cuda.device_count()
     cont_losses = utils.AverageMeter('ContLoss', ':.4e')
     losses = utils.AverageMeter('Loss', ':.4e')
     cap_ce_losses = utils.AverageMeter('CapCeLoss', ':.4e')
@@ -445,7 +450,7 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
           visual_embs = torch.cat(all_visual_embs)
           cap_embs = torch.cat(all_cap_embs)
 
-        print(visual_embs.shape, cap_embs.shape)
+        # print(visual_embs.shape, cap_embs.shape)
         logits_per_image = visual_embs @ cap_embs.t()
         logits_per_text = logits_per_image.t()
         if i == 0:
@@ -457,7 +462,8 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         image_acc1, image_acc5 = losses_utils.contrastive_acc(logits_per_image, topk=(1, 5))
         loss += args.loss_scale * (caption_loss + image_loss) / 2.0
         cont_losses.update(loss.item(), images.size(0))
-
+        print(caption_acc1, image_acc1)
+        
         # measure accuracy and record loss
         top1_caption.update(caption_acc1[0], images.size(0))
         top5_caption.update(caption_acc5[0], images.size(0))
@@ -468,9 +474,9 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         losses.update(loss.item(), images.size(0))
         loss.backward()
         
-        # 업데이트 안하는 파라미터 확인
+        # # 업데이트 하는 파라미터 확인
         # for name, param in model.named_parameters():
-        #     if param.grad is None:
+        #     if param.grad is not None:
         #         print(name)
         
         # Update weights
@@ -489,6 +495,7 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
             optimizer.step()
             optimizer.zero_grad()
             print('=' * 80)
+            
         with torch.no_grad():
             # Normalize trainable embeddings.
             frozen_norm = torch.norm(model.module.model.input_embeddings.weight[:-args.num_tokens, :], dim=1).mean(0)
@@ -509,26 +516,54 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
                 top1_image.all_reduce()
                 top5_image.all_reduce()
 
-        progress.display(i + 1)
+            progress.display(i + 1)
 
-        writer.add_scalar('train/loss', losses.avg, actual_step)
-        writer.add_scalar('train/contrastive_loss', cont_losses.avg, actual_step)
-        writer.add_scalar('train/cap_ce_loss', cap_ce_losses.avg, actual_step)
-        # writer.add_scalar('train/vis_ce_loss', vis_ce_losses.avg, actual_step)
+            writer.add_scalar('train/loss', losses.avg, actual_step)
+            writer.add_scalar('train/contrastive_loss', cont_losses.avg, actual_step)
+            writer.add_scalar('train/cap_ce_loss', cap_ce_losses.avg, actual_step)
+            # writer.add_scalar('train/vis_ce_loss', vis_ce_losses.avg, actual_step)
 
-        writer.add_scalar('train/t2i_top1_acc', top1_caption.avg, actual_step)
-        writer.add_scalar('train/t2i_top5_acc', top5_caption.avg, actual_step)
-        writer.add_scalar('train/i2t_top1_acc', top1_image.avg, actual_step)
-        writer.add_scalar('train/i2t_top5_acc', top5_image.avg, actual_step)
+            writer.add_scalar('train/t2i_top1_acc', top1_caption.avg, actual_step)
+            writer.add_scalar('train/t2i_top5_acc', top5_caption.avg, actual_step)
+            writer.add_scalar('train/i2t_top1_acc', top1_image.avg, actual_step)
+            writer.add_scalar('train/i2t_top5_acc', top5_image.avg, actual_step)
 
-        losses.reset()
-        cont_losses.reset()
-        cap_ce_losses.reset()
-        # vis_ce_losses.reset()
-        top1_caption.reset()
-        top5_caption.reset()
-        top1_image.reset()
-        top5_image.reset()
+            # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+            #     image_bs = images.shape[0]
+            #     normalized_images = images - images.min()
+            #     normalized_images /= normalized_images.max()  # (N, 3, H, W)
+            #     max_images_to_show = 16
+
+            #     # Append caption text.
+            #     pred_tokens = cap_output[:, args.n_visual_tokens-1:-1, :].argmax(dim=-1)
+            #     generated_captions = tokenizer.batch_decode(pred_tokens, skip_special_tokens=False)
+                
+                
+            #     # Retrieved images (from text).
+            #     retrieved_image_idx = logits_per_text[:image_bs, :image_bs].argmax(-1)
+            #     t2i_images = torch.stack(
+            #     [normalized_images[retrieved_image_idx[i], ...] for i in range(len(retrieved_image_idx))],
+            #     axis=0)
+            #     t2i_images = torch.cat([t2i_images.float().cpu(), cap_img], axis=2)[:max_images_to_show]
+            #     t2i_grid = torchvision.utils.make_grid(t2i_images, nrow=int(max_images_to_show ** 0.5), padding=4)
+            #     writer.add_image('train/t2i_ret', t2i_grid, actual_step)
+
+            #     # Retrieved text (from image).
+            #     retrieved_text_idx = logits_per_image[:image_bs, :image_bs].argmax(-1)
+            #     retrieved_text = torch.stack(
+            #     [cap_img[retrieved_image_idx[i], ...] for i in range(len(retrieved_text_idx))],
+            #     axis=0)
+            #     i2t_images = torch.cat([normalized_images.float().cpu(), retrieved_text], axis=2)[:max_images_to_show]
+            #     i2t_grid = torchvision.utils.make_grid(i2t_images, nrow=int(max_images_to_show ** 0.5), padding=4)
+            #     writer.add_image('train/i2t_ret', i2t_grid, actual_step)
+            losses.reset()
+            cont_losses.reset()
+            cap_ce_losses.reset()
+            # vis_ce_losses.reset()
+            top1_caption.reset()
+            top5_caption.reset()
+            top1_image.reset()
+            top5_image.reset()
     
         if i == args.steps_per_epoch - 1:
             break

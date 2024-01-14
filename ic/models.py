@@ -146,7 +146,8 @@ class ICModel(nn.Module):
     labels: Optional[torch.LongTensor] = None,
     caption_len: Optional[torch.LongTensor] = None,
     neg_labels: Optional[torch.LongTensor] = None,
-    neg_caption_len: Optional[torch.LongTensor] = None
+    neg_caption_len: Optional[torch.LongTensor] = None,
+    input_prefix: Optional[str] = None
   ):
     visual_embs = self.get_visual_embs(pixel_values)
 
@@ -157,7 +158,24 @@ class ICModel(nn.Module):
       input_embs = self.input_embeddings(labels)  # (N, T, D)
       
       cap_embedding_idx = caption_len - 1
-      print(cap_embedding_idx)
+      # print(cap_embedding_idx)
+      # if input_prefix is not None:
+      #   prompt_ids = self.tokenizer(input_prefix, add_special_tokens=False, return_tensors="pt").input_ids
+      #   prompt_ids = prompt_ids.to(visual_embs.device)
+      #   prompt_embs = self.input_embeddings(prompt_ids)
+      #   prompt_embs = prompt_embs.repeat(batch_size, 1, 1)
+      #   print(f'Adding prefix "{input_prefix}" to retrieval.')
+      #   # Add prompt embeddings.
+      #   prefix_embs = prompt_embs
+      #   input_embs = torch.cat([prefix_embs, input_embs], axis=1)
+      #   cap_embedding_idx += prefix_embs.shape[1]
+      #   labels = torch.cat([
+      #     torch.zeros(prefix_embs.shape[:2], dtype=torch.int64).to(labels.device) - 100,
+      #     labels
+      #   ], axis=1)
+      #   assert prompt_embs.shape[0] == batch_size, prompt_embs.shape
+      #   assert prompt_embs.shape[2] == input_embs.shape[2], prompt_embs.shape
+      #   assert len(prompt_embs.shape) == 3, prompt_embs.shape
       ### LLM에 넣기
       cap_output = self.lm(inputs_embeds=input_embs,
                             labels = labels,
@@ -217,18 +235,21 @@ class ICModel(nn.Module):
       ### output 생성
       cap_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
-        input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-        cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+        cap_input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        cap_hidden_states.append(fc_layer(cap_input_hidden_state))  # (N, seq_len, 2048)
       
       neg_cap_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
-        input_hidden_state = torch.stack([neg_cap_output.hidden_states[idx][i, neg_cap_embedding_idx[i]:neg_cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-        neg_cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+        neg_input_hidden_state = torch.stack([neg_cap_output.hidden_states[idx][i, neg_cap_embedding_idx[i]:neg_cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        neg_cap_hidden_states.append(fc_layer(neg_input_hidden_state))  # (N, seq_len, 2048)
       
       visual_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
-        input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
-        visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+        vis_input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
+        visual_hidden_states.append(fc_layer(vis_input_hidden_state))  # (N, seq_len, 2048)
+      
+      # print("cap_hidden_states: ", cap_hidden_states)
+      # print("neg_cap_hidden_states: ", neg_cap_hidden_states)
       
       cap_last_hidden_states = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
       neg_cap_last_hidden_states = torch.stack(neg_cap_hidden_states, dim=-1).sum(dim=-1)
@@ -255,11 +276,12 @@ class IC(nn.Module):
 
   def __call__(self, images: Tensor, tgt_tokens: Optional[Tensor] = None, 
                caption_len: Optional[Tensor] = None, neg_tgt_tokens: Optional[Tensor] = None, 
-               neg_caption_len: Optional[Tensor] = None) -> Tensor:
+               neg_caption_len: Optional[Tensor] = None, input_prefix: Optional[str] = None) -> Tensor:
       output = self.model(
         pixel_values = images,
         labels = tgt_tokens,
         caption_len = caption_len,
         neg_labels = neg_tgt_tokens,
-        neg_caption_len = neg_caption_len)
+        neg_caption_len = neg_caption_len,
+        input_prefix = input_prefix)
       return output

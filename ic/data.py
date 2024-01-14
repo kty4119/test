@@ -33,6 +33,8 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
     if 'coco' in args.dataset:
       dataset_paths.append(os.path.join(args.dataset_dir, 'captions_train2014.json'))
       image_data_dirs.append(os.path.join(args.image_dir, 'train2014'))
+      # dataset_paths.append(os.path.join(args.dataset_dir, 'captions_val2014.json'))
+      # image_data_dirs.append(os.path.join(args.image_dir, 'val2014'))
     else:
       raise NotImplementedError
 
@@ -97,6 +99,7 @@ class JsonDataset(Dataset):
   def __getitem__(self, idx):
     while True:
       image_path = os.path.join(self.base_image_dir, str(self.images[idx]))
+      # print(image_path)
       caption = str(self.captions[idx])
       # print(caption)
     #   clip_l_path = os.path.join(self.base_image_dir, 'clip_embs', str(self.images[idx]) + '.npy')

@@ -41,30 +41,55 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
         # print(cap_output.loss)
         loss = cap_output.loss
         if args.distributed:
-            original_pos_cap_embs = torch.clone(pos_cap_embs)
-            original_neg_cap_embs = torch.clone(neg_cap_embs)
-            all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
-            all_pos_cap_embs = [torch.zeros_like(pos_cap_embs) for _ in range(dist.get_world_size())]
-            all_neg_cap_embs = [torch.zeros_like(pos_cap_embs) for _ in range(dist.get_world_size())]
-            
-            dist.all_gather(all_visual_embs, visual_embs)
-            dist.all_gather(all_pos_cap_embs, pos_cap_embs)
-            dist.all_gather(all_neg_cap_embs, neg_cap_embs)
+          original_pos_cap_embs = torch.clone(pos_cap_embs)
+          original_neg_cap_embs = torch.clone(neg_cap_embs)
+          all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
+          all_pos_cap_embs = [torch.zeros_like(pos_cap_embs) for _ in range(dist.get_world_size())]
+          all_neg_cap_embs = [torch.zeros_like(pos_cap_embs) for _ in range(dist.get_world_size())]
+          
+          dist.all_gather(all_visual_embs, visual_embs)
+          dist.all_gather(all_pos_cap_embs, pos_cap_embs)
+          dist.all_gather(all_neg_cap_embs, neg_cap_embs)
 
-            # Overwrite with embeddings produced on this replica, which track the gradients.
-            all_visual_embs[dist.get_rank()] = visual_embs
-            all_pos_cap_embs[dist.get_rank()] = pos_cap_embs
-            all_neg_cap_embs[dist.get_rank()] = neg_cap_embs
-            visual_embs = torch.cat(all_visual_embs)
-            pos_cap_embs = torch.cat(all_pos_cap_embs)
-            neg_cap_embs = torch.cat(all_neg_cap_embs)
-            start_idx = args.rank * images.shape[0]
-            end_idx = start_idx + images.shape[0]
-            assert torch.all(pos_cap_embs[start_idx:end_idx] == original_pos_cap_embs), args.rank
+          # Overwrite with embeddings produced on this replica, which track the gradients.
+          all_visual_embs[dist.get_rank()] = visual_embs
+          all_pos_cap_embs[dist.get_rank()] = pos_cap_embs
+          all_neg_cap_embs[dist.get_rank()] = neg_cap_embs
+          visual_embs = torch.cat(all_visual_embs)
+          pos_cap_embs = torch.cat(all_pos_cap_embs)
+          neg_cap_embs = torch.cat(all_neg_cap_embs)
+          start_idx = args.rank * images.shape[0]
+          end_idx = start_idx + images.shape[0]
+          assert torch.all(pos_cap_embs[start_idx:end_idx] == original_pos_cap_embs), args.rank
 
         all_pos_text_features.append(pos_cap_embs.cpu())
         all_neg_text_features.append(neg_cap_embs.cpu())
         all_image_features.append(visual_embs.cpu())
+        
+        pos_text_features = pos_cap_embs.cpu()
+        neg_text_features = neg_cap_embs.cpu()
+        image_features = visual_embs.cpu()
+        # 어떻게 생긴지 : neg_text, image, pos_text
+        print(f"Computing similarity between {pos_text_features.shape} and {neg_text_features.shape}.")
+        logits_per_pos_text = pos_text_features @ image_features.t()
+        logits_per_neg_text = neg_text_features @ image_features.t()
+        all_metrics = losses_utils.sugar_crepe_acc(logits_per_pos_text, logits_per_neg_text)
+        print("metrics: ", all_metrics.item())
+        # if float(all_metrics.item()) < 80.0:
+        #   print(type(all_metrics.item()), all_metrics.item(), i)
+        #   print(pos_caption_len)
+        all_image_acc1, all_image_acc5 = losses_utils.contrastive_acc(logits_per_pos_text, topk=(1, 5))
+        all_caption_acc1, all_caption_acc5 = losses_utils.contrastive_acc(logits_per_neg_text, topk=(1, 5))
+        image_loss = losses_utils.contrastive_loss(logits_per_pos_text)
+        caption_loss = losses_utils.contrastive_loss(logits_per_neg_text)
+        # print("all_image_acc1: ", all_image_acc1)
+        loss = args.loss_scale * (image_loss + caption_loss) / 2.0
+        cont_losses.update(loss.item(), logits_per_pos_text.size(0))
+        top1_caption.update(all_caption_acc1.item(), logits_per_pos_text.size(0))
+        top5_caption.update(all_caption_acc5.item(), logits_per_pos_text.size(0))
+        top1_image.update(all_image_acc1.item(), logits_per_pos_text.size(0))
+        top5_image.update(all_image_acc5.item(), logits_per_pos_text.size(0))
+        metrics.update(all_metrics.item(), logits_per_pos_text.size(0))
 
         if i % args.print_freq == 0:
           progress.display(i + 1)
@@ -77,30 +102,30 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       all_pos_text_features = torch.cat(all_pos_text_features, axis=0)
       all_neg_text_features = torch.cat(all_neg_text_features, axis=0)
 
-      print(f"Computing similarity between {all_pos_text_features.shape} and {all_neg_text_features.shape}.")
-      logits_per_pos_text = all_pos_text_features @ all_image_features.t()
-      logits_per_neg_text = all_neg_text_features @ all_image_features.t()
-      all_metrics = losses_utils.sugar_crepe_acc(logits_per_pos_text, logits_per_neg_text)
-      print("metrics: ", all_metrics)
+      # print(f"Computing similarity between {all_pos_text_features.shape} and {all_neg_text_features.shape}.")
+      # logits_per_pos_text = all_pos_text_features @ all_image_features.t()
+      # logits_per_neg_text = all_neg_text_features @ all_image_features.t()
+      # all_metrics = losses_utils.sugar_crepe_acc(logits_per_pos_text, logits_per_neg_text)
+      # print("metrics: ", all_metrics)
       
-      all_image_acc1, all_image_acc5 = losses_utils.contrastive_acc(logits_per_pos_text, topk=(1, 5))
-      all_caption_acc1, all_caption_acc5 = losses_utils.contrastive_acc(logits_per_neg_text, topk=(1, 5))
-      image_loss = losses_utils.contrastive_loss(logits_per_pos_text)
-      caption_loss = losses_utils.contrastive_loss(logits_per_neg_text)
-      print("all_image_acc1: ", all_image_acc1)
-      loss = args.loss_scale * (image_loss + caption_loss) / 2.0
-      cont_losses.update(loss.item(), logits_per_pos_text.size(0))
-      top1_caption.update(all_caption_acc1.item(), logits_per_pos_text.size(0))
-      top5_caption.update(all_caption_acc5.item(), logits_per_pos_text.size(0))
-      top1_image.update(all_image_acc1.item(), logits_per_pos_text.size(0))
-      top5_image.update(all_image_acc5.item(), logits_per_pos_text.size(0))
-      metrics.update(all_metrics.item(), logits_per_pos_text.size(0))
+      # all_image_acc1, all_image_acc5 = losses_utils.contrastive_acc(logits_per_pos_text, topk=(1, 5))
+      # all_caption_acc1, all_caption_acc5 = losses_utils.contrastive_acc(logits_per_neg_text, topk=(1, 5))
+      # image_loss = losses_utils.contrastive_loss(logits_per_pos_text)
+      # caption_loss = losses_utils.contrastive_loss(logits_per_neg_text)
+      # print("all_image_acc1: ", all_image_acc1)
+      # loss = args.loss_scale * (image_loss + caption_loss) / 2.0
+      # cont_losses.update(loss.item(), logits_per_pos_text.size(0))
+      # top1_caption.update(all_caption_acc1.item(), logits_per_pos_text.size(0))
+      # top5_caption.update(all_caption_acc5.item(), logits_per_pos_text.size(0))
+      # top1_image.update(all_image_acc1.item(), logits_per_pos_text.size(0))
+      # top5_image.update(all_image_acc5.item(), logits_per_pos_text.size(0))
+      # metrics.update(all_metrics.item(), logits_per_pos_text.size(0))
 
   cont_losses = utils.AverageMeter('ContLoss', ':.4e', utils.Summary.AVERAGE)
-  top1_caption = utils.AverageMeter('CaptionAcc@1', ':6.2f', utils.Summary.AVERAGE)
-  top5_caption = utils.AverageMeter('CaptionAcc@5', ':6.2f', utils.Summary.AVERAGE)
-  top1_image = utils.AverageMeter('ImageAcc@1', ':6.2f', utils.Summary.AVERAGE)
-  top5_image = utils.AverageMeter('ImageAcc@5', ':6.2f', utils.Summary.AVERAGE)
+  top1_caption = utils.AverageMeter('PositiveAcc@1', ':6.2f', utils.Summary.AVERAGE)
+  top5_caption = utils.AverageMeter('PositiveAcc@5', ':6.2f', utils.Summary.AVERAGE)
+  top1_image = utils.AverageMeter('NegativeAcc@1', ':6.2f', utils.Summary.AVERAGE)
+  top5_image = utils.AverageMeter('NegativeAcc@5', ':6.2f', utils.Summary.AVERAGE)
   metrics = utils.AverageMeter('Metrics', ':6.2f', utils.Summary.AVERAGE)
 
 
@@ -128,7 +153,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
       aux_val_dataset, batch_size=(args.val_batch_size or args.batch_size), shuffle=False,
       num_workers=args.workers, pin_memory=True, collate_fn=data.collate_fn)
     run_validate(aux_val_loader, len(val_loader))
-  print("metrics:", metrics)
+  # print("metrics:", metrics)
   progress.display_summary()
   writer.add_scalar('val/contrastive_loss', cont_losses.avg, actual_step)
   writer.add_scalar('val/t2i_top1_acc', top1_caption.avg, actual_step)

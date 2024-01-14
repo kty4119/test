@@ -86,10 +86,11 @@ def accuracy(output, target, padding, topk=(1,)):
     target_expand = target[..., None].expand_as(pred)
     correct = pred.eq(target_expand)
     correct = correct * mask[..., None].expand_as(correct)
-
+    # print(mask.sum())
     res = []
     for k in topk:
       correct_k = correct[..., :k].reshape(-1).float().sum(0, keepdim=True)
+      # print("correct_k: ", correct_k)
       res.append(correct_k.mul_(100.0 / mask.sum()))
     return res
 

@@ -49,12 +49,12 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
       #   }
       dataset_paths = [
         f'{args.dataset_dir}add_obj.json',
-        f'{args.dataset_dir}add_att.json',
-        f'{args.dataset_dir}replace_obj.json',
-        f'{args.dataset_dir}replace_att.json',
-        f'{args.dataset_dir}replace_rel.json',
-        f'{args.dataset_dir}swap_obj.json',
-        f'{args.dataset_dir}swap_att.json'
+        # f'{args.dataset_dir}add_att.json',
+        # f'{args.dataset_dir}replace_obj.json',
+        # f'{args.dataset_dir}replace_att.json',
+        # f'{args.dataset_dir}replace_rel.json',
+        # f'{args.dataset_dir}swap_obj.json',
+        # f'{args.dataset_dir}swap_att.json'
         ]
       # dataset = {}
       # for c, data_path in dataset_paths.items():
@@ -77,9 +77,9 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
         image_size=args.image_size)
       for (path, image_dir) in zip(dataset_paths, image_data_dirs)])
   elif len(dataset_paths) == 1: # train
-    dataset = JsonDataset(dataset_paths[0], image_data_dirs[0], tokenizer, 'annotations', 'image_id',
-      'caption', args.visual_model, train=train, max_len=args.max_len, precision=args.precision,
-      image_size=args.image_size)
+    dataset = Val_JsonDataset(dataset_paths[0], image_data_dirs[0], tokenizer, 'filename', 'caption',
+        'negative_caption', args.visual_model, train=train, max_len=args.max_len, precision=args.precision,
+        image_size=args.image_size)
   else:
     raise ValueError(f'There should be at least one valid dataset, got train={args.dataset}, val={args.val_dataset} instead.')
   return dataset
@@ -137,7 +137,6 @@ class JsonDataset(Dataset):
           max_length=self.max_len)
         tokens = tokenized_data.input_ids[0]
         caption_len = tokenized_data.attention_mask[0].sum()
-
         decode_caption = self.tokenizer.decode(tokens, skip_special_tokens=False)
         self.font = self.font or ImageFont.load_default()
         cap_img = utils.create_image_of_text(decode_caption.encode('ascii', 'ignore'), width=self.image_size, nrows=2, font=self.font)
@@ -156,7 +155,7 @@ class Val_JsonDataset(Dataset):
     logging.debug(f'Loading json data from {input_filename}.')
     with open(input_filename, 'r') as file:
       df = json.load(file)
-
+    
     self.base_image_dir = base_image_dir
     self.images = [value[filename] for _, value in df.items()]
     self.pos_captions = [value[caption] for _, value in df.items()]
@@ -187,8 +186,9 @@ class Val_JsonDataset(Dataset):
       image_path = os.path.join(self.base_image_dir, str(self.images[idx]))
       pos_caption = str(self.pos_captions[idx])
       neg_caption = str(self.neg_captions[idx])
-      # print(caption)
-    #   clip_l_path = os.path.join(self.base_image_dir, 'clip_embs', str(self.images[idx]) + '.npy')
+      # print(image_path)
+      # print("pos_caption: ", pos_caption)
+      # print("neg_caption: ", neg_caption)
 
       try:
         img = Image.open(image_path)
@@ -196,7 +196,50 @@ class Val_JsonDataset(Dataset):
 
         # Generation mode.
         ### pos caption
-        pos_caption = pos_caption
+        ### swap_att
+        # instruction = "Focus on swaps for matching with images: " # 0.529
+        # instruction = "Focus on match images with swapped attribute: " # 0.544
+        # instruction = "Focus on swapped attribute for matching with images: " # 0.550
+        
+        ### swap_obj
+        # instruction = "Focus on swaps for matching with images: " # 0.588
+        # instruction = "Focus on match images with swapped object: " # 0.612
+        # instruction = "Focus on swapped object for matching with images: " # 0.608
+        
+        ### replace_rel
+        # instruction = "Focus on replaces for matching with images: " # 0.619
+        # instruction = "Focus on match images with replaced relation: " # 0.639
+        # instruction = "Focus on replaced relation for matching with images: " # 0.634
+        
+        ### replace_att
+        # instruction = "Focus on replaces for matching with images: " # 0.642
+        # instruction = "Focus on match images with replaced attribute: " # 0.641
+        # instruction = "Focus on replaced attribute for matching with images: " # 0.643
+        # instruction = "Focus on 'Modifiers' in image: " # 0.643
+        # instruction = "### Instruction: Focus on the attribute the object has in the caption.\n### Caption: "
+        
+        ### replace_obj
+        # instruction = "Focus on replaces for matching with images: " # 0.835
+        # instruction = "Focus on match images with replaced object: " # 0.837
+        # instruction = "Focus on replaced object for matching with images: " # 0.831
+        # instruction = "Focus on the objects: "
+        # no instruction: 0.837
+        
+        ### add_att
+        # instruction = "Focus on attribute for matching with images: " # 0.543
+        # instruction = "Focus on match images with added attribute: " # 0.565
+        # instruction = "Focus on added attribute for matching with images: " # 0.553
+        # instruction = "Focus on the 'Modifiers' in caption: " # 0.581
+        # no instruction: 0.594
+        
+        ### add_obj
+        # instruction = "Focus on object for matching with images: " # 0.662
+        # instruction = "Focus on match images with added object: " # 0.699
+        # instruction = "Focus on added object for matching with images: " # 0.690
+        # instruction = "Focus on the object in image: " # 0.727
+        # no instruction: 0.726
+      
+        # pos_caption = instruction + pos_caption
         tokenized_pos_data = self.tokenizer(
           pos_caption,
           return_tensors="pt",
@@ -205,13 +248,13 @@ class Val_JsonDataset(Dataset):
           max_length=self.max_len)
         pos_tokens = tokenized_pos_data.input_ids[0]
         pos_caption_len = tokenized_pos_data.attention_mask[0].sum()
-
+        # print(pos_caption, pos_caption_len)
         decode_pos_caption = self.tokenizer.decode(pos_tokens, skip_special_tokens=False)
         self.font = self.font or ImageFont.load_default()
         pos_cap_img = utils.create_image_of_text(decode_pos_caption.encode('ascii', 'ignore'), width=self.image_size, nrows=2, font=self.font)
         
         ### neg caption
-        neg_caption = neg_caption
+        # neg_caption = instruction + neg_caption
         tokenized_neg_data = self.tokenizer(
           neg_caption,
           return_tensors="pt",
@@ -220,7 +263,7 @@ class Val_JsonDataset(Dataset):
           max_length=self.max_len)
         neg_tokens = tokenized_neg_data.input_ids[0]
         neg_caption_len = tokenized_neg_data.attention_mask[0].sum()
-
+        # print(neg_caption, neg_caption_len)
         decode_neg_caption = self.tokenizer.decode(neg_tokens, skip_special_tokens=False)
         self.font = self.font or ImageFont.load_default()
         neg_cap_img = utils.create_image_of_text(decode_neg_caption.encode('ascii', 'ignore'), width=self.image_size, nrows=2, font=self.font)
