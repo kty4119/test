@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"]= "1,2"
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -33,14 +33,14 @@ from ic import loss as losses_utils
 # from ic import validate_v2
 from ic import validate_sugar_crepe
 
-llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff','/home/shared/hub/ty_alpaca']
+llm_models = ['facebook/opt-6.7b', '/home/shared/hub/models--ty--alpaca-7b-wdiff','/home/shared/hub/ty_alpaca', '/home/shared/hub/ty_mistral_instruct']
 datasets = ['coco']
 best_acc1 = 0  # Variable to keep track of best model so far.
 
 
 def parse_args(args):
     parser = argparse.ArgumentParser(description='Model training')
-    parser.add_argument('--opt-version', default='/home/shared/hub/ty_alpaca',
+    parser.add_argument('--opt-version', default='/home/shared/hub/ty_mistral_instruct',
                       choices=llm_models,
                       help='OPT versions: ' +
                         ' | '.join(llm_models) +
@@ -76,13 +76,13 @@ def parse_args(args):
                 help='manual epoch number (useful on restarts)')
     parser.add_argument('--val_steps_per_epoch', default=-1, type=int, metavar='N',
                 help='number of validation steps per epoch')
-    parser.add_argument('-b', '--batch-size', default=80, type=int,
+    parser.add_argument('-b', '--batch-size', default=20, type=int,
                 metavar='N',
                 help='mini-batch size (default: 100), this is the total '
                 'batch size of all GPUs on the current node when '
                 'using Data Parallel or Distributed Data Parallel')
     parser.add_argument('--val-batch-size', default=None, type=int)
-    parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
+    parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                 metavar='LR', help='initial learning rate', dest='lr')
     parser.add_argument('--lr-warmup-steps', default=2000, type=int,
                 metavar='N', help='Number of steps to warm up lr.')
@@ -101,7 +101,7 @@ def parse_args(args):
     parser.add_argument('--image-size', default=224, type=int, metavar='N', help='Size of images.')
     parser.add_argument('--emb-dim', default=256, type=int, metavar='N', help='Embedding dimension.')
 
-    parser.add_argument('--max-len', default=32, type=int,
+    parser.add_argument('--max-len', default=128, type=int,
                 metavar='N', help='Maximum length to truncate captions / generations to.')
 
 
@@ -214,7 +214,7 @@ def main_worker(gpu, ngpus_per_node, args):
     model_args.num_tokens = args.num_tokens
     
     # tokenizer = AutoTokenizer.from_pretrained(args.opt_version, use_fast=False)
-    tokenizer = AutoTokenizer.from_pretrained(args.opt_version)
+    tokenizer = AutoTokenizer.from_pretrained(args.opt_version, add_eos_token = True)
     if tokenizer.pad_token is None:
         if args.opt_version in ['EleutherAI/gpt-j-6B']:
             tokenizer.pad_token = tokenizer.eos_token
@@ -222,6 +222,9 @@ def main_worker(gpu, ngpus_per_node, args):
             tokenizer.pad_token_id = tokenizer.eos_token_id
         print("tokenizer.pad_token, tokenizer.eos_token:", tokenizer.pad_token, tokenizer.eos_token)
     # Add an summary token for loss masking (and visualization) purposes.
+    tokenizer.padding_side = "right"
+    tokenizer.model_max_length = 128
+    tokenizer.add_special_tokens({"pad_token": "<PAD>"})
     tokenizer.add_special_tokens({"cls_token": "<|summary|>"})  # add special summary token to tokenizer
 
     # Add [IMG] tokens to the vocabulary.
@@ -328,9 +331,9 @@ def main_worker(gpu, ngpus_per_node, args):
     
     # Data loading code
     train_dataset = data.get_dataset(args, 'train', tokenizer)
-    val_dataset = data.get_dataset(args, 'val', tokenizer)
+    # val_dataset = data.get_dataset(args, 'val', tokenizer)
     # train_dataset = data_sugar_crepe.get_dataset(args, 'train', tokenizer)
-    # val_dataset = data_sugar_crepe.get_dataset(args, 'val', tokenizer)
+    val_dataset = data_sugar_crepe.get_dataset(args, 'val', tokenizer)
     print(f'Training with {len(train_dataset)} examples and validating with {len(val_dataset)} examples.')
 
     if args.distributed:
@@ -429,7 +432,6 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         loss = 0
             
         (cap_output, visual_output, cap_embs, visual_embs) = model(images, tokens, caption_len)
-        print(cap_output.loss)
         # print(visual_output.loss)
         cap_ce_loss = cap_output.loss * 0.5
         # vis_ce_loss = visual_output.loss * 0.5
@@ -440,21 +442,21 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         # vis_ce_losses.update(vis_ce_loss.item(), images.size(0))
         
         if args.distributed:
-          all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
-          all_cap_embs = [torch.zeros_like(cap_embs) for _ in range(dist.get_world_size())]
-          dist.all_gather(all_visual_embs, visual_embs)
-          dist.all_gather(all_cap_embs, cap_embs)
-          # Overwrite with embeddings produced on this replace, which have the gradient.
-          all_visual_embs[dist.get_rank()] = visual_embs
-          all_cap_embs[dist.get_rank()] = cap_embs
-          visual_embs = torch.cat(all_visual_embs)
-          cap_embs = torch.cat(all_cap_embs)
+            all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]
+            all_cap_embs = [torch.zeros_like(cap_embs) for _ in range(dist.get_world_size())]
+            dist.all_gather(all_visual_embs, visual_embs)
+            dist.all_gather(all_cap_embs, cap_embs)
+            # Overwrite with embeddings produced on this replace, which have the gradient.
+            all_visual_embs[dist.get_rank()] = visual_embs
+            all_cap_embs[dist.get_rank()] = cap_embs
+            visual_embs = torch.cat(all_visual_embs)
+            cap_embs = torch.cat(all_cap_embs)
 
         # print(visual_embs.shape, cap_embs.shape)
         logits_per_image = visual_embs @ cap_embs.t()
         logits_per_text = logits_per_image.t()
         if i == 0:
-          print(f'Running contrastive loss over logits_per_text.shape = {logits_per_text.shape} and logits_per_image.shape = {logits_per_image.shape}')
+            print(f'Running contrastive loss over logits_per_text.shape = {logits_per_text.shape} and logits_per_image.shape = {logits_per_image.shape}')
 
         caption_loss = losses_utils.contrastive_loss(logits_per_text)
         image_loss = losses_utils.contrastive_loss(logits_per_image)
@@ -471,6 +473,7 @@ def train(train_loader, model, tokenizer, criterion, optimizer, epoch, scheduler
         top5_image.update(image_acc5[0], images.size(0))
         
         loss = loss / args.grad_accumulation_steps
+        print("llm loss: ", cap_output.loss.item(), "cont loss: ", args.loss_scale * (caption_loss.item() + image_loss.item()) / 2.0, "업데이트되는 loss: ", loss.item())
         losses.update(loss.item(), images.size(0))
         loss.backward()
         

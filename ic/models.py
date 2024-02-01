@@ -21,7 +21,7 @@ from ic import layer
 class ICArgs:
   freeze_lm: bool = True
   freeze_vm: bool = True
-  opt_version: str = 'facebook/opt-6.7b'
+  opt_version: str = '/home/shared/hub/ty_mistral_instruct'
   visual_encoder: str = 'google/vit-base-patch16-224-in21k'
   text_emb_layers: List[int] = [-1]
   token_idx: List[int] = [0]
@@ -57,7 +57,7 @@ class ICModel(nn.Module):
         param.requires_grad = False
     else:
       self.lm.train()
-      
+    self.lm.config.pad_token_id = tokenizer.pad_token_id
     # self.token_idx = args.token_idx
     self.lm.resize_token_embeddings(len(tokenizer))
 
@@ -65,7 +65,8 @@ class ICModel(nn.Module):
 
     print("Restoring pretrained weights for the visual model.")
     if 'vit' in visual_encoder:
-      self.visual_model = ViTModel.from_pretrained(visual_encoder, ignore_mismatched_sizes=True)
+      # self.visual_model = ViTModel.from_pretrained(visual_encoder, ignore_mismatched_sizes=True)
+      self.visual_model = ViTModel.from_pretrained(visual_encoder)
       self.visual_input_embeddings = self.visual_model.get_input_embeddings()
     else:
       self.visual_model = AutoModel.from_pretrained(visual_encoder)
@@ -93,20 +94,22 @@ class ICModel(nn.Module):
         
         self.cap_hidden_fcs.append(
             layer.Adapter(in_dim, self.emb_dim, num_input_tokens=self.args.num_tokens,
-                              num_output_tokens=1))
+                              num_output_tokens=1, mode = 'qformer'))
         self.vis_hidden_fcs.append(
             layer.Adapter(in_dim, self.emb_dim, num_input_tokens=self.args.num_tokens,
-                              num_output_tokens=1))
+                              num_output_tokens=1, mode = 'qformer'))
       elif layer_idx < self.lm.config.num_hidden_layers:
         self.cap_hidden_fcs.append(
             layer.Adapter(self.lm.config.hidden_size, self.emb_dim, 
-                              num_input_tokens=self.args.num_tokens, num_output_tokens=1))
+                              num_input_tokens=self.args.num_tokens, num_output_tokens=1, mode = 'qformer'))
         self.vis_hidden_fcs.append(
             layer.Adapter(self.lm.config.hidden_size, self.emb_dim, 
-                              num_input_tokens=self.args.num_tokens, num_output_tokens=1))
+                              num_input_tokens=self.args.num_tokens, num_output_tokens=1, mode = 'qformer'))
       else:
         raise ValueError(f'Embedding of layer {layer_idx} was requested but model only has {self.lm.config.num_hidden_layers} layers.')
     self.visual_embeddings = nn.Linear(hidden_size, embedding_dim) # (768, 32 * 4096)
+    # print("hidden_size: ", hidden_size)
+    # print("embedding_dim: ", embedding_dim)
     # self.freeze_layer(self.visual_embeddings)
     self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     
@@ -121,11 +124,19 @@ class ICModel(nn.Module):
       # print(pixel_values.shape)
       outputs = self.visual_model(pixel_values)
       # outputs = torch.stack([outputs.last_hidden_state[i, 167:168, :] for i in range(bs)], axis=0)
-      # outputs = outputs.last_hidden_states
-      outputs = outputs.pooler_output
+      outputs = outputs.last_hidden_state
+      # print(outputs.shape)
+      # outputs = outputs.pooler_output
       # visual adapter에 넣고 visual emb 뽑기
+      # vis_input_embs = self.visual_input_embeddings(pixel_values) # qformer로 해야하나? 어떻게 할 수 있지?
+      # vis_hidden_states = []
+      # for idx, fc_layer in zip(self.args.text_emb_layers, visual_embeddings):
+      #   vit_hidden_state = torch.stack([outputs.last_hidden_state[i, 167:168, :] for i in range(bs)], axis=0)
+      #   vis_input_embedding = torch.stack([vis_input_embs[i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+      #   vis_hidden_states.append(fc_layer(input_hidden_state, cap_input_embedding))  # (N, seq_len, 2048)
       visual_embs = self.visual_embeddings(outputs)
-      visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 1, 4096))
+      # print(visual_embs.shape)
+      visual_embs = torch.reshape(visual_embs, (visual_embs.shape[0], 197, 4096))
     else:
       raise NotImplementedError
     return visual_embs
@@ -191,12 +202,14 @@ class ICModel(nn.Module):
       cap_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
         input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-        cap_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+        cap_input_embedding = torch.stack([input_embs[i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        cap_hidden_states.append(fc_layer(input_hidden_state, cap_input_embedding))  # (N, seq_len, 2048)
       
       visual_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
         input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
-        visual_hidden_states.append(fc_layer(input_hidden_state))  # (N, seq_len, 2048)
+        vis_input_embedding = torch.stack([visual_embs[i, 0:1, :] for i in range(batch_size)], axis=0)
+        visual_hidden_states.append(fc_layer(input_hidden_state, vis_input_embedding))  # (N, seq_len, 2048)
       
       cap_last_hidden_states = torch.stack(cap_hidden_states, dim=-1).sum(dim=-1)
       visual_last_hidden_states = torch.stack(visual_hidden_states, dim=-1).sum(dim=-1)
@@ -236,17 +249,20 @@ class ICModel(nn.Module):
       cap_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
         cap_input_hidden_state = torch.stack([cap_output.hidden_states[idx][i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-        cap_hidden_states.append(fc_layer(cap_input_hidden_state))  # (N, seq_len, 2048)
+        cap_input_embedding = torch.stack([input_embs[i, cap_embedding_idx[i]:cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        cap_hidden_states.append(fc_layer(cap_input_hidden_state, cap_input_embedding))  # (N, seq_len, 2048)
       
       neg_cap_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, cap_hidden_fcs):
         neg_input_hidden_state = torch.stack([neg_cap_output.hidden_states[idx][i, neg_cap_embedding_idx[i]:neg_cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
-        neg_cap_hidden_states.append(fc_layer(neg_input_hidden_state))  # (N, seq_len, 2048)
+        neg_cap_input_embedding = torch.stack([neg_input_embs[i, neg_cap_embedding_idx[i]:neg_cap_embedding_idx[i]+1, :] for i in range(batch_size)], axis=0)
+        neg_cap_hidden_states.append(fc_layer(neg_input_hidden_state, neg_cap_input_embedding))  # (N, seq_len, 2048)
       
       visual_hidden_states = []
       for idx, fc_layer in zip(self.args.text_emb_layers, vis_hidden_fcs):
         vis_input_hidden_state = torch.stack([visual_output.hidden_states[idx][i, 0:1, :] for i in range(batch_size)], axis=0)
-        visual_hidden_states.append(fc_layer(vis_input_hidden_state))  # (N, seq_len, 2048)
+        vis_input_embedding = torch.stack([visual_embs[i, 0:1, :] for i in range(batch_size)], axis=0)
+        visual_hidden_states.append(fc_layer(vis_input_hidden_state, vis_input_embedding))  # (N, seq_len, 2048)
       
       # print("cap_hidden_states: ", cap_hidden_states)
       # print("neg_cap_hidden_states: ", neg_cap_hidden_states)

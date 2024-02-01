@@ -36,7 +36,7 @@ def validate(val_loader, model, tokenizer, criterion, epoch, args):
 
         (cap_output, visual_output, cap_embs, visual_embs) = model(images, tokens, caption_len)  # (N, T, C)
         print(cap_output.loss)
-        loss = cap_output.loss
+        # loss = cap_output.loss
         if args.distributed:
             original_cap_embs = torch.clone(cap_embs)
             all_visual_embs = [torch.zeros_like(visual_embs) for _ in range(dist.get_world_size())]

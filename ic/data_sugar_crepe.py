@@ -48,9 +48,9 @@ def get_dataset(args, split: str, tokenizer, precision: str = 'fp32') -> Dataset
       #   'swap_att'   : f'{args.dataset_dir}/swap_att.json'
       #   }
       dataset_paths = [
-        f'{args.dataset_dir}add_obj.json',
+        # f'{args.dataset_dir}add_obj.json',
         # f'{args.dataset_dir}add_att.json',
-        # f'{args.dataset_dir}replace_obj.json',
+        f'{args.dataset_dir}replace_obj.json',
         # f'{args.dataset_dir}replace_att.json',
         # f'{args.dataset_dir}replace_rel.json',
         # f'{args.dataset_dir}swap_obj.json',
@@ -200,16 +200,19 @@ class Val_JsonDataset(Dataset):
         # instruction = "Focus on swaps for matching with images: " # 0.529
         # instruction = "Focus on match images with swapped attribute: " # 0.544
         # instruction = "Focus on swapped attribute for matching with images: " # 0.550
+        # instruction = "### Instruction: Focus on the attributes of the object in the caption.\n### Caption: "
         
         ### swap_obj
         # instruction = "Focus on swaps for matching with images: " # 0.588
         # instruction = "Focus on match images with swapped object: " # 0.612
         # instruction = "Focus on swapped object for matching with images: " # 0.608
+        # instruction = "### Instruction: Focus on the attributes of the object in the caption.\n### Caption: "
         
         ### replace_rel
         # instruction = "Focus on replaces for matching with images: " # 0.619
         # instruction = "Focus on match images with replaced relation: " # 0.639
         # instruction = "Focus on replaced relation for matching with images: " # 0.634
+        # instruction = "### Instruction: Focus on the relationships between each entity in the caption.\n### Caption: "
         
         ### replace_att
         # instruction = "Focus on replaces for matching with images: " # 0.642
@@ -217,12 +220,14 @@ class Val_JsonDataset(Dataset):
         # instruction = "Focus on replaced attribute for matching with images: " # 0.643
         # instruction = "Focus on 'Modifiers' in image: " # 0.643
         # instruction = "### Instruction: Focus on the attribute the object has in the caption.\n### Caption: "
+        # instruction = "### Instruction: Focus on each object's properties in captions.\n### Caption: "
         
         ### replace_obj
         # instruction = "Focus on replaces for matching with images: " # 0.835
         # instruction = "Focus on match images with replaced object: " # 0.837
         # instruction = "Focus on replaced object for matching with images: " # 0.831
         # instruction = "Focus on the objects: "
+        # instruction = "### Instruction: Focus on the attribute the object has in the caption.\n### Caption: "
         # no instruction: 0.837
         
         ### add_att
@@ -230,6 +235,7 @@ class Val_JsonDataset(Dataset):
         # instruction = "Focus on match images with added attribute: " # 0.565
         # instruction = "Focus on added attribute for matching with images: " # 0.553
         # instruction = "Focus on the 'Modifiers' in caption: " # 0.581
+        # instruction = "### Instruction: Focus on the attribute the object has in the caption.\n### Caption: "
         # no instruction: 0.594
         
         ### add_obj
@@ -237,8 +243,18 @@ class Val_JsonDataset(Dataset):
         # instruction = "Focus on match images with added object: " # 0.699
         # instruction = "Focus on added object for matching with images: " # 0.690
         # instruction = "Focus on the object in image: " # 0.727
+        # instruction = "### Instruction: Focus on the attribute the object has in the caption.\n### Caption: "
         # no instruction: 0.726
-      
+        pos_messages = [
+          {
+              "role": "system",
+              "content": "You are a bot that answers according to the given instruction.",
+          },
+          {"role": "user", "content": "### Instruction: Find the object in the caption.\n### Caption: " + str(pos_caption)},
+        ]
+        
+        pos_caption = self.tokenizer.apply_chat_template(pos_messages, tokenize=False, add_generation_prompt=True)
+        print(pos_caption)
         # pos_caption = instruction + pos_caption
         tokenized_pos_data = self.tokenizer(
           pos_caption,
@@ -254,6 +270,18 @@ class Val_JsonDataset(Dataset):
         pos_cap_img = utils.create_image_of_text(decode_pos_caption.encode('ascii', 'ignore'), width=self.image_size, nrows=2, font=self.font)
         
         ### neg caption
+        neg_messages = [
+          {
+              "role": "system",
+              "content": "You are a bot that answers according to the given instruction.",
+          },
+          {"role": "user", "content": "### Instruction: Find the object in the caption.\n### Caption: " + str(neg_caption)},
+        ]
+        # Find the attributes of the object in the caption.
+        
+        
+        neg_caption = self.tokenizer.apply_chat_template(neg_messages, tokenize=False, add_generation_prompt=True)
+        print(neg_caption)
         # neg_caption = instruction + neg_caption
         tokenized_neg_data = self.tokenizer(
           neg_caption,
