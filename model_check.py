@@ -1,4 +1,4 @@
-from transformers import AutoImageProcessor, ViTModel, AutoTokenizer, OPTModel, OPTForCausalLM, AutoModelForCausalLM
+from transformers import AutoImageProcessor, ViTModel, AutoTokenizer, OPTModel, OPTForCausalLM, AutoModelForCausalLM,CLIPVisionModel
 import json
 from PIL import Image
 
@@ -18,8 +18,10 @@ with open(json_path, 'r') as file:
     image = Image.open('/home/kty4119/coco/train2014/'+image_id)
     caption = data['annotations'][2]['caption']
 
-img_model = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
-image_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+# img_model = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
+# image_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+img_model = CLIPVisionModel.from_pretrained("openai/clip-vit-large-patch14")
+image_processor = AutoImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
 hidden_size = img_model.config.hidden_size
 visual_input_embeddings = img_model.get_input_embeddings()
 img_token = image_processor(image, return_tensors="pt")
@@ -27,9 +29,11 @@ img_token = img_token.pixel_values
 vis_input_embs = visual_input_embeddings(img_token)
 vit_output = img_model(img_token)
 pooler_output = vit_output.pooler_output
+last_1 = vit_output.last_hidden_state
 print(hidden_size)
 print("vis_input_embs: ", vis_input_embs, vis_input_embs.shape)
 print("pooler output: ", pooler_output, pooler_output.shape)
+print("last_hidden_state: ", last_1, last_1.shape)
 
 # text_model = OPTForCausalLM.from_pretrained("facebook/opt-6.7b")
 # input_embeddings = text_model.get_input_embeddings()
